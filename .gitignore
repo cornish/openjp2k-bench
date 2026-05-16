@@ -1,0 +1,10 @@
+build/
+build-*/
+third_party/
+corpus/*
+!corpus/.gitkeep
+!corpus/README.md
+*.json
+!docs/*.json
+.cache/
+compile_commands.json
