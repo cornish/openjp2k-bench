@@ -16,3 +16,7 @@ corpus/synthetic/*
 compile_commands.json
 __pycache__/
 *.pyc
+
+# Allow checked-in test fixture
+!tests/fixtures/tiny.jp2
+build-tools/
