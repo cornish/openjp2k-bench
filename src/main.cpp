@@ -13,6 +13,7 @@
 //   --no-verify          skip cross-decoder pixel comparison
 //   --roi WxH@X,Y        decode only the given region (e.g. 256x256@0,0)
 //   --concurrent-files N parallel bench jobs (per-file blob held once)    [1]
+//   --require-clean      exit 3 if any tracked library tree is dirty
 //   --list-decoders      print available decoders and exit
 //
 // Output: JSON array on stdout, one entry per (file, decoder, threads) run.
@@ -34,6 +35,7 @@
 
 #include "adapter.h"
 #include "bench.h"
+#include "build_info.h"
 #include "env_capture.h"
 #include "json_out.h"
 #include "thread_pool.h"
@@ -69,6 +71,7 @@ int main(int argc, char** argv) {
   std::string only_decoder;
   std::vector<std::string> files;
   int concurrent_files = 1;
+  bool require_clean = false;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -100,6 +103,9 @@ int main(int argc, char** argv) {
     else if (a == "--concurrent-files") {
       concurrent_files = std::atoi(need("--concurrent-files").c_str());
       if (concurrent_files < 1) concurrent_files = 1;
+    }
+    else if (a == "--require-clean") {
+      require_clean = true;
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
@@ -139,6 +145,23 @@ int main(int argc, char** argv) {
   std::cerr << "decoders:";
   for (auto& d : decoders) std::cerr << " " << d->name() << "(" << d->version() << ")";
   std::cerr << "\n";
+
+  // --require-clean enforces spec §3.6: refuse merge-gate runs from a
+  // working tree with uncommitted changes. The describe string from
+  // cmake/Versions.cmake appends "-dirty" when this is the case.
+  if (require_clean) {
+    std::string oj = JP2KBENCH_OPENJPEG_COMMIT;
+    std::string gk = JP2KBENCH_GROK_COMMIT;
+    bool dirty = (oj.size() >= 6 && oj.find("-dirty") != std::string::npos) ||
+                 (gk.size() >= 6 && gk.find("-dirty") != std::string::npos);
+    if (dirty) {
+      std::cerr << "--require-clean: refusing to run, dirty source tree:";
+      if (oj.find("-dirty") != std::string::npos) std::cerr << " openjpeg=" << oj;
+      if (gk.find("-dirty") != std::string::npos) std::cerr << " grok=" << gk;
+      std::cerr << "\n";
+      return 3;
+    }
+  }
 
   // Grok's thread pool is a process-singleton (grk_initialize) and only the
   // first --threads value seen pins the pool size; per-decode num_threads on

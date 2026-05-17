@@ -5,8 +5,12 @@
 function(_jp2kbench_git_describe out_var path)
   set(_sha "unknown")
   if(EXISTS "${path}/.git")
+    # describe --always --dirty --abbrev=12: prefer a tag if present, else
+    # a 12-char abbrev SHA; appends "-dirty" when the working tree differs
+    # from HEAD. Per spec §3.6 the dirty marker is the gate condition that
+    # blocks merge-gate runs from compromised provenance.
     execute_process(
-      COMMAND git -C "${path}" rev-parse --short=12 HEAD
+      COMMAND git -C "${path}" describe --tags --always --dirty --abbrev=12
       OUTPUT_VARIABLE _sha
       OUTPUT_STRIP_TRAILING_WHITESPACE
       RESULT_VARIABLE _rc)
