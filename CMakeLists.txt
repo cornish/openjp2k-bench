@@ -84,9 +84,16 @@ target_include_directories(jp2k-bench PRIVATE
 if(JP2KBENCH_HAVE_GROK)
   target_sources(jp2k-bench PRIVATE src/adapter_grok.cpp)
   target_compile_definitions(jp2k-bench PRIVATE JP2KBENCH_HAVE_GROK=1)
-  target_link_libraries(jp2k-bench PRIVATE grokj2k_static)
+  # In Grok v20 the public library target is `grokj2k` and its
+  # PUBLIC include directory (src/lib/core, which contains grok.h)
+  # propagates automatically via target_include_directories.  The old
+  # `grokj2k_static` target / `src/lib/jp2` header path no longer exist.
+  target_link_libraries(jp2k-bench PRIVATE grokj2k)
+  # grok.h itself lives in src/lib/core, but it #includes "grk_config.h"
+  # which is a generated header placed in the build tree.
   target_include_directories(jp2k-bench PRIVATE
-    ${JP2KBENCH_GROK_SOURCE}/src/lib/jp2)
+    ${JP2KBENCH_GROK_SOURCE}/src/lib/core
+    ${CMAKE_BINARY_DIR}/_grok/src/lib/core)
 endif()
 
 # Thread support

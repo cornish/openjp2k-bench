@@ -1,12 +1,29 @@
-// Grok decoder adapter. Compiled only when JP2KBENCH_HAVE_GROK is defined,
-// which CMake sets when third_party/grok/CMakeLists.txt is present.
+// Grok decoder adapter for Grok v20.x.
 //
-// Grok's C API (grok.h) mirrors openjpeg's at a high level — memory stream,
-// codec, header, decode — but with different types/names.
+// Threading model note:
+//   Grok v20 takes its worker-thread count at grk_initialize() time and
+//   maintains a process-wide pool for the lifetime of the library.  There
+//   is no per-codec or per-call API to change the thread count without
+//   tearing the pool down (grk_deinitialize + grk_initialize), which would
+//   pollute the timed region of the benchmark.
+//
+//   We therefore initialize Grok lazily on the first decode() call with the
+//   requested thread count.  Subsequent decode() calls with a *different*
+//   num_threads will NOT change the actual pool size — the bench's
+//   --threads sweep is effectively meaningful only on the first value for
+//   the Grok decoder.  This is documented; users running thread sweeps
+//   against Grok should run each thread count in a separate process
+//   (e.g. one bench invocation per --threads value).
+//
+// Pixel-format contract: must match adapter_openjpeg.cpp.  Interleaved,
+// channel-major within a pixel.  prec <= 8 => 1 byte/sample; prec > 8 =>
+// 2 bytes/sample, host-endian, right-aligned, unsigned after sign-shift.
+// Grok exposes per-component `stride` distinct from `w`; we honor it.
 
 #include "adapter.h"
 
 #include <cstring>
+#include <mutex>
 
 extern "C" {
 #include <grok.h>
@@ -32,28 +49,30 @@ GRK_CODEC_FORMAT sniff_codec(const uint8_t* data, std::size_t size) {
 
 class GrokDecoder : public Decoder {
  public:
-  GrokDecoder() { grk_initialize(nullptr, 0); }
-  ~GrokDecoder() override { grk_deinitialize(); }
+  GrokDecoder() = default;
+  ~GrokDecoder() override {
+    if (initialized_) {
+      grk_deinitialize();
+    }
+  }
 
   const char* name() const override { return "grok"; }
   std::string version() const override { return grk_version(); }
 
   bool decode(const uint8_t* data, std::size_t size, int num_threads,
               DecodedImage& out, std::string& err) override {
+    ensure_initialized(num_threads);
+
     GRK_CODEC_FORMAT fmt = sniff_codec(data, size);
     if (fmt == GRK_CODEC_UNK) { err = "unknown codestream"; return false; }
 
-    grk_set_msg_handlers(silent, nullptr, silent, nullptr, silent, nullptr);
-
-    grk_decompress_parameters params;
-    grk_decompress_set_default_params(&params);
-    params.numThreads = num_threads > 1 ? num_threads : 1;
+    grk_decompress_parameters params{};
 
     grk_stream_params sp{};
-    sp.buf = (uint8_t*)data;
+    sp.buf = const_cast<uint8_t*>(data);
     sp.buf_len = size;
 
-    grk_codec* codec = grk_decompress_init(&sp, &params);
+    grk_object* codec = grk_decompress_init(&sp, &params);
     if (!codec) { err = "decompress_init"; return false; }
 
     grk_header_info hdr{};
@@ -65,8 +84,8 @@ class GrokDecoder : public Decoder {
       grk_object_unref(codec); err = "decompress"; return false;
     }
 
-    grk_image* image = grk_decompress_get_composited_image(codec);
-    if (!image || image->numcomps == 0) {
+    grk_image* image = grk_decompress_get_image(codec);
+    if (!image || image->numcomps == 0 || !image->comps) {
       grk_object_unref(codec); err = "empty image"; return false;
     }
 
@@ -85,33 +104,69 @@ class GrokDecoder : public Decoder {
     out.channels = image->numcomps;
     out.bit_depth = prec;
 
+    const uint32_t nc = image->numcomps;
+
+    // v20: each component reports its actual storage type (GRK_INT_32,
+    // GRK_INT_16, GRK_INT_8).  We must dispatch on it; treating a 16-bit
+    // buffer as int32 produces garbage.
+    auto load_sample = [&](const grk_image_comp& comp,
+                           const void* row_base, uint32_t x) -> int {
+      switch (comp.data_type) {
+        case GRK_INT_32: return static_cast<const int32_t*>(row_base)[x];
+        case GRK_INT_16: return static_cast<const int16_t*>(row_base)[x];
+        case GRK_INT_8:  return static_cast<const int8_t*>(row_base)[x];
+        default:         return static_cast<const int32_t*>(row_base)[x];
+      }
+    };
+    auto sample_bytes = [](grk_data_type t) -> std::size_t {
+      switch (t) {
+        case GRK_INT_8:  return 1;
+        case GRK_INT_16: return 2;
+        case GRK_INT_32: return 4;
+        default:         return 4;
+      }
+    };
+
     if (prec <= 8) {
-      out.pixels.resize((std::size_t)w * h * image->numcomps);
-      for (uint32_t c = 0; c < image->numcomps; ++c) {
-        const int32_t* src = image->comps[c].data;
-        int sgnd = image->comps[c].sgnd;
+      out.pixels.resize((std::size_t)w * h * nc);
+      for (uint32_t c = 0; c < nc; ++c) {
+        const grk_image_comp& comp = image->comps[c];
+        const uint8_t* base = static_cast<const uint8_t*>(comp.data);
+        const std::size_t sb = sample_bytes(comp.data_type);
+        const uint32_t stride = comp.stride ? comp.stride : w;
+        int sgnd = comp.sgnd;
         int shift = sgnd ? (1 << (prec - 1)) : 0;
         uint8_t* dst = out.pixels.data() + c;
-        for (uint32_t i = 0, n = w * h; i < n; ++i) {
-          int v = src[i] + shift;
-          if (v < 0) v = 0; else if (v > 255) v = 255;
-          dst[i * image->numcomps] = (uint8_t)v;
+        for (uint32_t y = 0; y < h; ++y) {
+          const void* row = base + (std::size_t)y * stride * sb;
+          for (uint32_t x = 0; x < w; ++x) {
+            int v = load_sample(comp, row, x) + shift;
+            if (v < 0) v = 0; else if (v > 255) v = 255;
+            dst[((std::size_t)y * w + x) * nc] = (uint8_t)v;
+          }
         }
       }
     } else {
-      out.pixels.resize((std::size_t)w * h * image->numcomps * 2);
+      out.pixels.resize((std::size_t)w * h * nc * 2);
       uint32_t max = (1u << prec) - 1;
-      for (uint32_t c = 0; c < image->numcomps; ++c) {
-        const int32_t* src = image->comps[c].data;
-        int sgnd = image->comps[c].sgnd;
+      for (uint32_t c = 0; c < nc; ++c) {
+        const grk_image_comp& comp = image->comps[c];
+        const uint8_t* base = static_cast<const uint8_t*>(comp.data);
+        const std::size_t sb = sample_bytes(comp.data_type);
+        const uint32_t stride = comp.stride ? comp.stride : w;
+        int sgnd = comp.sgnd;
         int shift = sgnd ? (1 << (prec - 1)) : 0;
         uint8_t* dst = out.pixels.data() + c * 2;
-        for (uint32_t i = 0, n = w * h; i < n; ++i) {
-          int v = src[i] + shift;
-          if (v < 0) v = 0; else if ((uint32_t)v > max) v = (int)max;
-          uint16_t u = (uint16_t)v;
-          dst[i * image->numcomps * 2 + 0] = (uint8_t)(u & 0xFF);
-          dst[i * image->numcomps * 2 + 1] = (uint8_t)(u >> 8);
+        for (uint32_t y = 0; y < h; ++y) {
+          const void* row = base + (std::size_t)y * stride * sb;
+          for (uint32_t x = 0; x < w; ++x) {
+            int v = load_sample(comp, row, x) + shift;
+            if (v < 0) v = 0; else if ((uint32_t)v > max) v = (int)max;
+            uint16_t u = (uint16_t)v;
+            std::size_t off = ((std::size_t)y * w + x) * nc * 2;
+            dst[off + 0] = (uint8_t)(u & 0xFF);
+            dst[off + 1] = (uint8_t)(u >> 8);
+          }
         }
       }
     }
@@ -119,6 +174,25 @@ class GrokDecoder : public Decoder {
     grk_object_unref(codec);
     return true;
   }
+
+ private:
+  void ensure_initialized(int num_threads) {
+    std::lock_guard<std::mutex> lk(init_mu_);
+    if (initialized_) return;
+    uint32_t t = num_threads > 0 ? (uint32_t)num_threads : 0;  // 0 = all CPUs
+    grk_msg_handlers handlers{};
+    handlers.info_callback  = &silent;
+    handlers.debug_callback = &silent;
+    handlers.trace_callback = &silent;
+    handlers.warn_callback  = &silent;
+    handlers.error_callback = &silent;
+    grk_set_msg_handlers(handlers);
+    grk_initialize(nullptr, t, nullptr);
+    initialized_ = true;
+  }
+
+  std::mutex init_mu_;
+  bool initialized_ = false;
 };
 
 }  // namespace

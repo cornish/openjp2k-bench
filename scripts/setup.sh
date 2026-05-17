@@ -15,7 +15,7 @@ OPENJPEG_URL="https://github.com/uclouvain/openjpeg.git"
 OPENJPEG_REF="v2.5.3"
 
 GROK_URL="https://github.com/GrokImageCompression/grok.git"
-GROK_REF="v13.0.0"   # adjust if API changes break adapter_grok.cpp
+GROK_REF="v20.3.3"   # adjust if API changes break adapter_grok.cpp
 # ---------------------------------------------------------------------------
 
 clone_or_update() {
@@ -29,6 +29,7 @@ clone_or_update() {
     git clone --depth 1 --branch "$ref" "$url" "$dest" || \
       (git clone "$url" "$dest" && git -C "$dest" checkout --detach "$ref")
   fi
+  git -C "$dest" submodule update --init --recursive --depth 1
 }
 
 clone_or_update "$OPENJPEG_URL" "$OPENJPEG_REF" "$TP/openjpeg"
