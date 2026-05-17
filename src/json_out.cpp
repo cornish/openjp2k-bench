@@ -57,6 +57,11 @@ void emit_result(std::ostream& os, const FileResult& r) {
     os << "\"roi\": null, ";
   }
   os << "\"pixel_match\": " << r.pixel_match << ", ";
+  if (std::isfinite(r.pixel_psnr_db)) {
+    os << "\"pixel_psnr_db\": " << r.pixel_psnr_db << ", ";
+  } else {
+    os << "\"pixel_psnr_db\": null, ";
+  }
   os << "\"rss_peak_kb\": "  << r.rss_peak_kb  << ", ";
   os << "\"rss_delta_kb\": " << r.rss_delta_kb << ", ";
   os << "\"error\": \"" << json_escape(r.error) << "\"";

@@ -75,6 +75,7 @@ add_executable(jp2k-bench
   src/json_out.cpp
   src/env_capture.cpp
   src/rss.cpp
+  src/verify.cpp
   src/adapter_openjpeg.cpp
 )
 target_include_directories(jp2k-bench PRIVATE

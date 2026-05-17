@@ -1,5 +1,6 @@
 #include "bench.h"
 #include "rss.h"
+#include "verify.h"
 
 #include <algorithm>
 #include <cmath>
@@ -92,6 +93,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
                std::memcmp(img.pixels.data(), ref_image->pixels.data(),
                            img.pixels.size()) != 0) {
       r.pixel_match = 0;
+      r.pixel_psnr_db = psnr_db(img, *ref_image);
     } else {
       r.pixel_match = 1;
     }
