@@ -38,6 +38,7 @@
 
 #include "adapter.h"
 
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -64,6 +65,12 @@ thread_local std::string g_last_grok_error;
 
 void grok_error_capture(const char* msg, void*) {
   if (msg) g_last_grok_error = msg;
+}
+
+double now_seconds() {
+  using clk = std::chrono::steady_clock;
+  static const auto t0 = clk::now();
+  return std::chrono::duration<double>(clk::now() - t0).count();
 }
 
 // Copy a Grok grk_image into out.pixels, interleaved channel-major. Returns
@@ -206,6 +213,57 @@ class GrokDecoder : public Decoder {
       return false;
     }
     return true;
+  }
+
+  bool decode_with_stages(const uint8_t* data, std::size_t size, int num_threads,
+                          DecodedImage& out, StageTimings& stages,
+                          std::string& err) override {
+    stages = {};
+    std::lock_guard<std::mutex> decode_lk(decode_mu_);
+    double ts0 = now_seconds();
+    if (!ensure_initialized(num_threads)) {
+      err = "grk_initialize failed"; return false;
+    }
+    GRK_CODEC_FORMAT fmt = sniff_codec(data, size);
+    if (fmt == GRK_CODEC_UNK) { err = "unknown codestream"; return false; }
+    grk_decompress_parameters params{};
+    grk_stream_params sp{};
+    sp.buf = const_cast<uint8_t*>(data);
+    sp.buf_len = size;
+    g_last_grok_error.clear();
+    grk_object* codec = grk_decompress_init(&sp, &params);
+    if (!codec) {
+      err = "decompress_init";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
+    }
+    grk_header_info hdr{};
+    if (!grk_decompress_read_header(codec, &hdr)) {
+      grk_object_unref(codec);
+      err = "read_header";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
+    }
+    double ts1 = now_seconds();
+    stages.setup_s = ts1 - ts0;
+
+    if (!grk_decompress(codec, nullptr)) {
+      grk_object_unref(codec);
+      err = "decompress";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
+    }
+    grk_image* image = grk_decompress_get_image(codec);
+    double ts2 = now_seconds();
+    stages.decode_s = ts2 - ts1;
+
+    bool ok = unpack_grok_image(image, out, err);
+    double ts3 = now_seconds();
+    stages.unpack_s = ts3 - ts2;
+
+    grk_object_unref(codec);
+    stages.teardown_s = now_seconds() - ts3;
+    return ok;
   }
 
   bool decode(const uint8_t* data, std::size_t size, int num_threads,

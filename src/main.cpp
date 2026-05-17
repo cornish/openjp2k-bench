@@ -20,6 +20,10 @@
 //   --header-only        time only create+setup+read_header per iter; no
 //                        actual decode runs. Diagnostic for how much of a
 //                        timing is setup vs. real work. Implies --no-verify.
+//   --profile-stages     bracket the per-iter call into setup / decode /
+//                        unpack / teardown phases; emit per-stage min times
+//                        in result.stages_s so adapter-side format-conversion
+//                        cost can be isolated from codec decode cost.
 //   --list-decoders      print available decoders and exit
 //
 // Output: JSON array on stdout, one entry per (file, decoder, threads) run.
@@ -119,6 +123,9 @@ int main(int argc, char** argv) {
     else if (a == "--header-only") {
       opts.header_only = true;
       opts.verify = false;  // no pixels to compare
+    }
+    else if (a == "--profile-stages") {
+      opts.profile_stages = true;
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";

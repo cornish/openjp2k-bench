@@ -40,6 +40,12 @@ struct FileResult {
   bool reused_codec = false;
   // True iff this row is a header-only timing pass (no real decode).
   bool header_only = false;
+  // True iff stage breakdown was captured; values are mins across iters.
+  bool profile_stages = false;
+  double stage_setup_s    = 0.0;
+  double stage_decode_s   = 0.0;
+  double stage_unpack_s   = 0.0;
+  double stage_teardown_s = 0.0;
   std::string error;
 };
 
@@ -61,6 +67,9 @@ struct BenchOptions {
   // wavelet/entropy decode. Diagnostic for "how much of single-tile
   // timing is setup vs. real work?".
   bool header_only = false;
+  // If true, the timed loop calls Decoder::decode_with_stages() and the
+  // result row reports the minimum across iterations for each stage.
+  bool profile_stages = false;
 };
 
 RunStats summarize(std::vector<double>& times_seconds);

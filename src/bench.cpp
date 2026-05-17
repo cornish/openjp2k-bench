@@ -62,6 +62,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.roi_x0 = opts.roi_x0; r.roi_y0 = opts.roi_y0;
   r.roi_x1 = opts.roi_x1; r.roi_y1 = opts.roi_y1;
   r.header_only = opts.header_only;
+  r.profile_stages = opts.profile_stages;
 
   // --reuse-codec: hoist whatever per-iter setup the adapter can hoist out
   // of the timed region. ROI mode goes through decode_region which the
@@ -81,6 +82,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   }
   r.reused_codec = actually_reused;
 
+  StageTimings last_stages{};
   auto do_decode = [&](DecodedImage& target) -> bool {
     if (opts.header_only) {
       // No pixels produced; verification path is skipped below.
@@ -93,8 +95,17 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
     if (prepared) {
       return prepared->decode(threads, target, err);
     }
+    if (opts.profile_stages) {
+      return decoder.decode_with_stages(blob.data(), blob.size(), threads,
+                                        target, last_stages, err);
+    }
     return decoder.decode(blob.data(), blob.size(), threads, target, err);
   };
+
+  // Per-iter min across each stage (matched to the timing convention used
+  // for total min). NaN-init by 0.0; first iter populates.
+  StageTimings stage_min{};
+  bool stage_min_seen = false;
 
   // Warmup. Discard timings; warm allocator, branch predictor, code cache.
   for (int i = 0; i < opts.warmup; ++i) {
@@ -146,6 +157,24 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
     if (rss_after > peak_observed) peak_observed = rss_after;
     int64_t delta = (int64_t)rss_after - (int64_t)rss_before;
     if (delta > max_delta) max_delta = delta;
+
+    if (opts.profile_stages) {
+      if (!stage_min_seen) {
+        stage_min = last_stages;
+        stage_min_seen = true;
+      } else {
+        if (last_stages.setup_s    < stage_min.setup_s)    stage_min.setup_s    = last_stages.setup_s;
+        if (last_stages.decode_s   < stage_min.decode_s)   stage_min.decode_s   = last_stages.decode_s;
+        if (last_stages.unpack_s   < stage_min.unpack_s)   stage_min.unpack_s   = last_stages.unpack_s;
+        if (last_stages.teardown_s < stage_min.teardown_s) stage_min.teardown_s = last_stages.teardown_s;
+      }
+    }
+  }
+  if (opts.profile_stages && stage_min_seen) {
+    r.stage_setup_s    = stage_min.setup_s;
+    r.stage_decode_s   = stage_min.decode_s;
+    r.stage_unpack_s   = stage_min.unpack_s;
+    r.stage_teardown_s = stage_min.teardown_s;
   }
   r.stats = summarize(times);
   r.stats.warmup = opts.warmup;

@@ -12,6 +12,7 @@
 
 #include "adapter.h"
 
+#include <chrono>
 #include <cstring>
 #include <cstdio>
 
@@ -71,6 +72,13 @@ OPJ_CODEC_FORMAT sniff_codec(const uint8_t* data, std::size_t size) {
     return OPJ_CODEC_J2K;
   }
   return OPJ_CODEC_UNKNOWN;
+}
+
+// Monotonic seconds helper, local to the stage-timing path.
+double now_seconds() {
+  using clk = std::chrono::steady_clock;
+  static const auto t0 = clk::now();
+  return std::chrono::duration<double>(clk::now() - t0).count();
 }
 
 // Copy an opj_image_t's planar component samples into out.pixels, interleaved
@@ -167,6 +175,61 @@ class OpenJpegDecoder : public Decoder {
     opj_stream_destroy(stream);
     if (!ok) { err = "read_header"; return false; }
     return true;
+  }
+
+  bool decode_with_stages(const uint8_t* data, std::size_t size, int num_threads,
+                          DecodedImage& out, StageTimings& stages,
+                          std::string& err) override {
+    stages = {};
+    double ts0 = now_seconds();
+    OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);
+    if (fmt == OPJ_CODEC_UNKNOWN) { err = "unknown codestream"; return false; }
+    MemStream mem{data, size, 0};
+    opj_stream_t* stream = opj_stream_default_create(OPJ_TRUE);
+    opj_stream_set_read_function(stream, &mem_read);
+    opj_stream_set_skip_function(stream, &mem_skip);
+    opj_stream_set_seek_function(stream, &mem_seek);
+    opj_stream_set_user_data(stream, &mem, nullptr);
+    opj_stream_set_user_data_length(stream, (OPJ_UINT64)size);
+    opj_codec_t* codec = opj_create_decompress(fmt);
+    if (!codec) { opj_stream_destroy(stream); err = "create_decompress"; return false; }
+    opj_set_info_handler(codec, &silent, nullptr);
+    opj_set_warning_handler(codec, &silent, nullptr);
+    opj_set_error_handler(codec, &silent, nullptr);
+    opj_dparameters_t params;
+    opj_set_default_decoder_parameters(&params);
+    if (!opj_setup_decoder(codec, &params)) {
+      opj_destroy_codec(codec); opj_stream_destroy(stream);
+      err = "setup_decoder"; return false;
+    }
+    if (num_threads > 1) opj_codec_set_threads(codec, num_threads);
+    opj_image_t* image = nullptr;
+    if (!opj_read_header(stream, codec, &image)) {
+      if (image) opj_image_destroy(image);
+      opj_destroy_codec(codec); opj_stream_destroy(stream);
+      err = "read_header"; return false;
+    }
+    double ts1 = now_seconds();
+    stages.setup_s = ts1 - ts0;
+
+    if (!opj_decode(codec, stream, image) ||
+        !opj_end_decompress(codec, stream)) {
+      opj_image_destroy(image);
+      opj_destroy_codec(codec); opj_stream_destroy(stream);
+      err = "decode"; return false;
+    }
+    double ts2 = now_seconds();
+    stages.decode_s = ts2 - ts1;
+
+    bool ok = unpack_opj_image(image, out, err);
+    double ts3 = now_seconds();
+    stages.unpack_s = ts3 - ts2;
+
+    opj_image_destroy(image);
+    opj_destroy_codec(codec);
+    opj_stream_destroy(stream);
+    stages.teardown_s = now_seconds() - ts3;
+    return ok;
   }
 
   bool decode(const uint8_t* data, std::size_t size, int num_threads,

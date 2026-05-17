@@ -90,7 +90,20 @@ for r in d['results']:
     assert r['timing_s']['min'] > 0, r['timing_s']
 " || { echo "FAIL header-only"; exit 1; }
 
-# 8. report.py runs against the basic output.
+# 8. --profile-stages emits per-stage timings; min total >= summed stages
+#    (sums are minimums per stage, so the inequality is one-directional;
+#    we just sanity-check the field exists and is positive).
+out=$(run stages --iters 2 --warmup 1 --profile-stages)
+python3 -c "
+import json
+d = json.load(open('$out'))
+for r in d['results']:
+    s = r['stages_s']
+    assert s is not None, 'stages_s missing'
+    assert s['decode'] > 0, s
+" || { echo "FAIL profile-stages"; exit 1; }
+
+# 9. report.py runs against the basic output.
 python3 "$ROOT/scripts/report.py" "$TMP/basic.json" >/dev/null \
   || { echo "FAIL report.py"; exit 1; }
 

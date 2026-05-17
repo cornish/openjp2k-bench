@@ -28,6 +28,17 @@ struct DecodedImage {
 
 class Decoder;
 
+// Per-stage timing breakdown of one decode call. All in seconds; zero
+// means "not measured by this adapter on this code path." Use only the
+// non-zero fields. Sum is not exhaustive — uncategorized overhead is the
+// difference between the iter's wall time and (setup+decode+unpack+teardown).
+struct StageTimings {
+  double setup_s    = 0.0;   // create_decompress + setup + read_header
+  double decode_s   = 0.0;   // opj_decode / grk_decompress proper
+  double unpack_s   = 0.0;   // adapter-side interleave into DecodedImage
+  double teardown_s = 0.0;   // destroy / unref
+};
+
 // Opaque handle returned by Decoder::prepare(). Lifetime: created outside
 // the timed loop; decode() invoked N times inside it. Whatever per-iter
 // setup cost the adapter can hoist out of decode() is hoisted into the
@@ -79,6 +90,16 @@ class Decoder {
   // when they can do this without invoking the full decode path.
   virtual bool header_only(const uint8_t* data, std::size_t size,
                            int num_threads, std::string& err) = 0;
+
+  // Full decode with per-stage timings populated. Default = run decode()
+  // and leave all stages at zero (the timed total is still in the bench's
+  // outer timer). Adapters override to bracket their internal phases.
+  virtual bool decode_with_stages(const uint8_t* data, std::size_t size,
+                                  int num_threads, DecodedImage& out,
+                                  StageTimings& stages, std::string& err) {
+    stages = {};
+    return decode(data, size, num_threads, out, err);
+  }
 };
 
 inline bool Decoder::decode_region(const uint8_t* data, std::size_t size,

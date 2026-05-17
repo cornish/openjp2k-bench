@@ -66,6 +66,16 @@ void emit_result(std::ostream& os, const FileResult& r) {
   os << "\"rss_delta_kb\": " << r.rss_delta_kb << ", ";
   os << "\"reused_codec\": " << (r.reused_codec ? "true" : "false") << ", ";
   os << "\"header_only\": "  << (r.header_only  ? "true" : "false") << ", ";
+  if (r.profile_stages) {
+    os << "\"stages_s\": {"
+       << "\"setup\": "    << r.stage_setup_s    << ", "
+       << "\"decode\": "   << r.stage_decode_s   << ", "
+       << "\"unpack\": "   << r.stage_unpack_s   << ", "
+       << "\"teardown\": " << r.stage_teardown_s
+       << "}, ";
+  } else {
+    os << "\"stages_s\": null, ";
+  }
   os << "\"error\": \"" << json_escape(r.error) << "\"";
   os << "}";
 }
