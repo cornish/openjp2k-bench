@@ -65,6 +65,7 @@ void emit_result(std::ostream& os, const FileResult& r) {
   os << "\"rss_peak_kb\": "  << r.rss_peak_kb  << ", ";
   os << "\"rss_delta_kb\": " << r.rss_delta_kb << ", ";
   os << "\"reused_codec\": " << (r.reused_codec ? "true" : "false") << ", ";
+  os << "\"header_only\": "  << (r.header_only  ? "true" : "false") << ", ";
   os << "\"error\": \"" << json_escape(r.error) << "\"";
   os << "}";
 }

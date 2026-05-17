@@ -38,6 +38,8 @@ struct FileResult {
   uint32_t roi_x0 = 0, roi_y0 = 0, roi_x1 = 0, roi_y1 = 0;
   // True iff prepare() actually hoisted nontrivial work for this row.
   bool reused_codec = false;
+  // True iff this row is a header-only timing pass (no real decode).
+  bool header_only = false;
   std::string error;
 };
 
@@ -54,6 +56,11 @@ struct BenchOptions {
   // If true, prepare() the codec once and reuse for all iters. Isolates the
   // hot decode path from per-iter codec setup cost.
   bool reuse_codec = false;
+  // If true, the timed loop calls Decoder::header_only() — measures the
+  // create+setup+read_header cost in isolation, without invoking the
+  // wavelet/entropy decode. Diagnostic for "how much of single-tile
+  // timing is setup vs. real work?".
+  bool header_only = false;
 };
 
 RunStats summarize(std::vector<double>& times_seconds);

@@ -178,6 +178,36 @@ class GrokDecoder : public Decoder {
   bool native_region_decode() const override { return false; }
   // decode_region uses the base-class default (full decode + crop).
 
+  bool header_only(const uint8_t* data, std::size_t size, int num_threads,
+                   std::string& err) override {
+    std::lock_guard<std::mutex> decode_lk(decode_mu_);
+    if (!ensure_initialized(num_threads)) {
+      err = "grk_initialize failed"; return false;
+    }
+    GRK_CODEC_FORMAT fmt = sniff_codec(data, size);
+    if (fmt == GRK_CODEC_UNK) { err = "unknown codestream"; return false; }
+    grk_decompress_parameters params{};
+    grk_stream_params sp{};
+    sp.buf = const_cast<uint8_t*>(data);
+    sp.buf_len = size;
+    g_last_grok_error.clear();
+    grk_object* codec = grk_decompress_init(&sp, &params);
+    if (!codec) {
+      err = "decompress_init";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
+    }
+    grk_header_info hdr{};
+    bool ok = grk_decompress_read_header(codec, &hdr);
+    grk_object_unref(codec);
+    if (!ok) {
+      err = "read_header";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
+    }
+    return true;
+  }
+
   bool decode(const uint8_t* data, std::size_t size, int num_threads,
               DecodedImage& out, std::string& err) override {
     // See top-of-file "Concurrent-decode safety" note for why decode() is

@@ -134,6 +134,41 @@ class OpenJpegDecoder : public Decoder {
 
   bool native_region_decode() const override { return true; }
 
+  bool header_only(const uint8_t* data, std::size_t size, int num_threads,
+                   std::string& err) override {
+    // Mirrors the create/setup/read_header prefix of decode(); skips
+    // opj_decode and opj_end_decompress so we measure only the setup
+    // cost. Same memory-stream wiring as decode().
+    OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);
+    if (fmt == OPJ_CODEC_UNKNOWN) { err = "unknown codestream"; return false; }
+    MemStream mem{data, size, 0};
+    opj_stream_t* stream = opj_stream_default_create(OPJ_TRUE);
+    opj_stream_set_read_function(stream, &mem_read);
+    opj_stream_set_skip_function(stream, &mem_skip);
+    opj_stream_set_seek_function(stream, &mem_seek);
+    opj_stream_set_user_data(stream, &mem, nullptr);
+    opj_stream_set_user_data_length(stream, (OPJ_UINT64)size);
+    opj_codec_t* codec = opj_create_decompress(fmt);
+    if (!codec) { opj_stream_destroy(stream); err = "create_decompress"; return false; }
+    opj_set_info_handler(codec, &silent, nullptr);
+    opj_set_warning_handler(codec, &silent, nullptr);
+    opj_set_error_handler(codec, &silent, nullptr);
+    opj_dparameters_t params;
+    opj_set_default_decoder_parameters(&params);
+    if (!opj_setup_decoder(codec, &params)) {
+      opj_destroy_codec(codec); opj_stream_destroy(stream);
+      err = "setup_decoder"; return false;
+    }
+    if (num_threads > 1) opj_codec_set_threads(codec, num_threads);
+    opj_image_t* image = nullptr;
+    bool ok = opj_read_header(stream, codec, &image);
+    if (image) opj_image_destroy(image);
+    opj_destroy_codec(codec);
+    opj_stream_destroy(stream);
+    if (!ok) { err = "read_header"; return false; }
+    return true;
+  }
+
   bool decode(const uint8_t* data, std::size_t size, int num_threads,
               DecodedImage& out, std::string& err) override {
     OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);

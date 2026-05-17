@@ -73,6 +73,12 @@ class Decoder {
   // so consumers can distinguish "we measured per-iter setup amortization"
   // from "this adapter has no reuse path."
   virtual bool supports_codec_reuse() const { return false; }
+
+  // Setup-only pass: create codec, parse header, destroy. Used by --header-
+  // only mode as a proxy for per-iter codec setup cost. Adapters override
+  // when they can do this without invoking the full decode path.
+  virtual bool header_only(const uint8_t* data, std::size_t size,
+                           int num_threads, std::string& err) = 0;
 };
 
 inline bool Decoder::decode_region(const uint8_t* data, std::size_t size,

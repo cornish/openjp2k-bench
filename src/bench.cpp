@@ -61,6 +61,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.has_roi = opts.has_roi;
   r.roi_x0 = opts.roi_x0; r.roi_y0 = opts.roi_y0;
   r.roi_x1 = opts.roi_x1; r.roi_y1 = opts.roi_y1;
+  r.header_only = opts.header_only;
 
   // --reuse-codec: hoist whatever per-iter setup the adapter can hoist out
   // of the timed region. ROI mode goes through decode_region which the
@@ -81,6 +82,10 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.reused_codec = actually_reused;
 
   auto do_decode = [&](DecodedImage& target) -> bool {
+    if (opts.header_only) {
+      // No pixels produced; verification path is skipped below.
+      return decoder.header_only(blob.data(), blob.size(), threads, err);
+    }
     if (opts.has_roi) {
       Decoder::Region rg{opts.roi_x0, opts.roi_y0, opts.roi_x1, opts.roi_y1};
       return decoder.decode_region(blob.data(), blob.size(), threads, rg, target, err);
@@ -106,7 +111,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.channels = img.channels;
   r.bit_depth = img.bit_depth;
 
-  if (ref_image) {
+  if (ref_image && !opts.header_only) {
     if (!img.same_shape(*ref_image)) {
       r.pixel_match = 0;
       r.error = "shape mismatch vs reference";

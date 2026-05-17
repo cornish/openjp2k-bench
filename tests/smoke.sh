@@ -78,7 +78,19 @@ for r in d['results']:
 "$BIN" --require-clean --iters 1 --warmup 1 "$FIX" >/dev/null 2>&1 \
   || { echo "FAIL require-clean against clean trees"; exit 1; }
 
-# 7. report.py runs against the basic output.
+# 7. --header-only times the setup-only pass and marks rows accordingly.
+out=$(run header_only --iters 2 --warmup 1 --header-only)
+python3 -c "
+import json
+d = json.load(open('$out'))
+for r in d['results']:
+    assert r['header_only'] is True, r
+    # In header-only mode width/height are 0 (no decode happened);
+    # timing should still be non-zero.
+    assert r['timing_s']['min'] > 0, r['timing_s']
+" || { echo "FAIL header-only"; exit 1; }
+
+# 8. report.py runs against the basic output.
 python3 "$ROOT/scripts/report.py" "$TMP/basic.json" >/dev/null \
   || { echo "FAIL report.py"; exit 1; }
 

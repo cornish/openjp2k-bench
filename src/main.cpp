@@ -17,6 +17,9 @@
 //   --reuse-codec        prepare the codec once per file, reuse across iters
 //                        (isolates steady-state decode from per-iter setup;
 //                         ROI mode is unaffected by this flag)
+//   --header-only        time only create+setup+read_header per iter; no
+//                        actual decode runs. Diagnostic for how much of a
+//                        timing is setup vs. real work. Implies --no-verify.
 //   --list-decoders      print available decoders and exit
 //
 // Output: JSON array on stdout, one entry per (file, decoder, threads) run.
@@ -113,6 +116,10 @@ int main(int argc, char** argv) {
     else if (a == "--reuse-codec") {
       opts.reuse_codec = true;
     }
+    else if (a == "--header-only") {
+      opts.header_only = true;
+      opts.verify = false;  // no pixels to compare
+    }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
 #if JP2KBENCH_HAVE_GROK
@@ -201,7 +208,7 @@ int main(int argc, char** argv) {
     // Reference image (serial, first decoder, threads=1).
     auto ref_image = std::make_shared<DecodedImage>();
     bool have_ref = false;
-    if (opts.verify) {
+    if (opts.verify && !opts.header_only) {
       std::string err;
       bool ok;
       if (opts.has_roi) {
