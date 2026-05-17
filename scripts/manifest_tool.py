@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -136,8 +137,15 @@ def write_manifest(files: Iterable[Path], root: Path, out_json: Path,
                    bucket_of: Callable[[Path], str]) -> None:
     """Write a manifest.json describing `files`. Paths recorded relative to root."""
     entries = []
+    # Use the unresolved root so symlinked buckets (e.g. corpus/public ->
+    # openjp2k-data/corpus) keep their logical path under the bench's corpus/.
+    root_str = str(root) + os.sep
     for p in sorted(files):
-        rel = p.resolve().relative_to(root.resolve()).as_posix()
+        ps = str(p)
+        if ps.startswith(root_str):
+            rel = ps[len(root_str):].replace(os.sep, "/")
+        else:
+            rel = p.resolve().relative_to(root.resolve()).as_posix()
         try:
             info = parse_file(p)
         except Exception as e:
@@ -151,11 +159,20 @@ def write_manifest(files: Iterable[Path], root: Path, out_json: Path,
 
 
 def _bucket_from_path(root: Path):
+    root_str = str(root) + os.sep
+
     def _b(p: Path) -> str:
-        rel = p.resolve().relative_to(root.resolve()).parts
-        if not rel:
+        ps = str(p)
+        if ps.startswith(root_str):
+            parts = ps[len(root_str):].split(os.sep)
+        else:
+            try:
+                parts = list(p.resolve().relative_to(root.resolve()).parts)
+            except ValueError:
+                return "user"
+        if not parts:
             return "user"
-        first = rel[0]
+        first = parts[0]
         if first in ("user", "synthetic", "public"):
             return first
         return "user"
@@ -174,8 +191,14 @@ def main() -> int:
     if not root.exists():
         print(f"manifest_tool: {root} does not exist", file=sys.stderr)
         return 2
-    files = [p for p in root.rglob("*")
-             if p.is_file() and p.suffix.lower() in (".jp2", ".j2k", ".jpc")]
+    # os.walk(followlinks=True) so corpus/public can be a symlink to a sibling
+    # repo's checkout. Path.rglob does not descend into symlinked dirs on
+    # Python < 3.13.
+    files = []
+    for dirpath, _dirs, fnames in os.walk(root, followlinks=True):
+        for fn in fnames:
+            if fn.lower().endswith((".jp2", ".j2k", ".jpc")):
+                files.append(Path(dirpath) / fn)
     write_manifest(files, root, args.out, _bucket_from_path(root))
     print(f"manifest_tool: wrote {args.out} ({len(files)} files)")
     return 0
