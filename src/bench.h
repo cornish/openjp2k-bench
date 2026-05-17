@@ -12,6 +12,7 @@ struct RunStats {
   // All times in seconds.
   double min = 0, p50 = 0, p90 = 0, p99 = 0, max = 0, mean = 0, stddev = 0;
   int iters = 0;
+  int warmup = 0;
 };
 
 struct FileResult {

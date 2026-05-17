@@ -61,6 +61,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
     img.pixels.clear();
     if (!decoder.decode(blob.data(), blob.size(), threads, img, err)) {
       r.error = "warmup: " + err;
+      r.stats.warmup = opts.warmup;
       return r;
     }
   }
@@ -93,11 +94,13 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
     if (!ok) {
       r.error = "iter: " + err;
       r.stats = summarize(times);
+      r.stats.warmup = opts.warmup;
       return r;
     }
     times.push_back(t1 - t0);
   }
   r.stats = summarize(times);
+  r.stats.warmup = opts.warmup;
   if (r.stats.min > 0) {
     double mpx = (double)img.width * (double)img.height / 1.0e6;
     r.megapixels_per_sec = mpx / r.stats.min;

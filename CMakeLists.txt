@@ -70,6 +70,7 @@ endif()
 add_executable(jp2k-bench
   src/main.cpp
   src/bench.cpp
+  src/json_out.cpp
   src/adapter_openjpeg.cpp
 )
 target_include_directories(jp2k-bench PRIVATE src)

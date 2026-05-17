@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -28,6 +29,7 @@
 
 #include "adapter.h"
 #include "bench.h"
+#include "json_out.h"
 
 using namespace jp2kbench;
 
@@ -51,51 +53,6 @@ std::vector<int> parse_int_list(const std::string& s) {
     if (!tok.empty()) out.push_back(std::atoi(tok.c_str()));
   }
   return out;
-}
-
-std::string json_escape(const std::string& s) {
-  std::string o;
-  o.reserve(s.size() + 2);
-  for (char c : s) {
-    switch (c) {
-      case '"': o += "\\\""; break;
-      case '\\': o += "\\\\"; break;
-      case '\n': o += "\\n"; break;
-      case '\r': o += "\\r"; break;
-      case '\t': o += "\\t"; break;
-      default:
-        if ((unsigned char)c < 0x20) {
-          char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-          o += buf;
-        } else o += c;
-    }
-  }
-  return o;
-}
-
-void emit_result(std::ostream& os, const FileResult& r, bool first) {
-  if (!first) os << ",\n";
-  os << "  {";
-  os << "\"file\": \"" << json_escape(r.path) << "\", ";
-  os << "\"bytes\": " << r.bytes << ", ";
-  os << "\"decoder\": \"" << json_escape(r.decoder) << "\", ";
-  os << "\"version\": \"" << json_escape(r.decoder_version) << "\", ";
-  os << "\"threads\": " << r.threads << ", ";
-  os << "\"width\": " << r.width << ", ";
-  os << "\"height\": " << r.height << ", ";
-  os << "\"channels\": " << r.channels << ", ";
-  os << "\"bit_depth\": " << r.bit_depth << ", ";
-  os << "\"iters\": " << r.stats.iters << ", ";
-  os << "\"min_s\": " << r.stats.min << ", ";
-  os << "\"p50_s\": " << r.stats.p50 << ", ";
-  os << "\"p90_s\": " << r.stats.p90 << ", ";
-  os << "\"p99_s\": " << r.stats.p99 << ", ";
-  os << "\"mean_s\": " << r.stats.mean << ", ";
-  os << "\"stddev_s\": " << r.stats.stddev << ", ";
-  os << "\"mpx_per_s\": " << r.megapixels_per_sec << ", ";
-  os << "\"pixel_match\": " << r.pixel_match << ", ";
-  os << "\"error\": \"" << json_escape(r.error) << "\"";
-  os << "}";
 }
 
 }  // namespace
@@ -173,8 +130,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::cout << "[\n";
-  bool first = true;
+  std::vector<FileResult> all_results;
   for (const auto& path : files) {
     auto blob = read_file(path);
     if (blob.empty()) {
@@ -205,11 +161,24 @@ int main(int argc, char** argv) {
           std::cerr << "min=" << (r.stats.min * 1e3) << "ms  "
                     << r.megapixels_per_sec << " MP/s\n";
         }
-        emit_result(std::cout, r, first);
-        first = false;
+        all_results.push_back(std::move(r));
       }
     }
   }
-  std::cout << "\n]\n";
+
+  RunHeader header;
+  {
+    char ts[32];
+    std::time_t t = std::time(nullptr);
+    std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t));
+    header.started_at_iso8601 = ts;
+  }
+  for (int i = 0; i < argc; ++i) header.argv.emplace_back(argv[i]);
+  header.concurrent_files = 1;   // set by Task 10
+  header.env_json = "";          // set by Task 2
+
+  Aggregate agg;                 // populated by Task 10
+
+  write_schema_v2(std::cout, header, all_results, agg);
   return 0;
 }
