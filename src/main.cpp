@@ -7,6 +7,8 @@
 //   --iters N            timed iterations per (file, decoder, threads)  [20]
 //   --warmup N           untimed warmup iterations                       [2]
 //   --threads N[,N...]   thread counts to sweep                          [1]
+//                        (note: Grok's pool is process-singleton; sweeping
+//                         with grok enabled pins the pool to the first N)
 //   --decoder NAME       only run named decoder (openjpeg, grok)
 //   --no-verify          skip cross-decoder pixel comparison
 //   --list-decoders      print available decoders and exit
@@ -152,6 +154,24 @@ int main(int argc, char** argv) {
   std::cerr << "decoders:";
   for (auto& d : decoders) std::cerr << " " << d->name() << "(" << d->version() << ")";
   std::cerr << "\n";
+
+  // Grok's thread pool is a process-singleton (grk_initialize) and only the
+  // first --threads value seen pins the pool size; per-decode num_threads on
+  // grk_decompress_parameters is not read by Grok v20. Sweeping multiple
+  // thread counts against Grok in one process therefore reports the first
+  // value's numbers for every t. See src/adapter_grok.cpp top-of-file note.
+  if (opts.thread_counts.size() > 1) {
+    for (auto& d : decoders) {
+      if (d->name() == "grok") {
+        std::cerr << "warning: --threads sweep with grok in one process gives "
+                     "misleading numbers; grok's pool is pinned to the first "
+                     "value (" << opts.thread_counts.front()
+                  << "). Run one process per --threads value for fair Grok "
+                     "scaling measurements.\n";
+        break;
+      }
+    }
+  }
 
   std::cout << "[\n";
   bool first = true;
