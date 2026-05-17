@@ -100,8 +100,11 @@ def _parse_codestream(data: bytes, cs_offset: int) -> dict:
             num_layers = struct.unpack(">H", data[seg_start + 2:seg_start + 4])[0]
             mct = data[seg_start + 4]
             num_decomp = data[seg_start + 5]
-            # transform: 0 = 9-7 irreversible (lossy), 1 = 5-3 reversible (lossless)
-            transform = data[seg_start + 10]
+            # SPcod layout after num_decomp:
+            #   +6 cblk_w, +7 cblk_h, +8 cblk_style, +9 transformation, then
+            #   variable-length precincts. transform: 0 = 9-7 irreversible
+            #   (lossy), 1 = 5-3 reversible (lossless).
+            transform = data[seg_start + 9]
             out["progression"] = _PROG_ORDER.get(sg_prog, f"unknown({sg_prog})")
             out["num_layers"] = num_layers
             out["mct"] = bool(mct)
