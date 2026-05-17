@@ -22,6 +22,50 @@ the fastest run is the run least disturbed by the OS — it's the best
 estimate of the codec's intrinsic cost. `p50` and `p99` are reported for
 sanity (huge gap → noisy environment).
 
+## What `--profile-stages` measures, and what to read into it
+
+`--profile-stages` brackets each timed iteration into four sub-times:
+`setup`, `decode`, `unpack`, and `teardown`. They are not all the codec
+doing the same work — knowing what each adapter does in `unpack`
+specifically is necessary to avoid attributing adapter-side asymmetry
+to the codec.
+
+- **OpenJPEG (`src/adapter_openjpeg.cpp:unpack_opj_image`):** the codec
+  always hands back planar `OPJ_INT32*` per-component buffers, regardless
+  of the file's bit depth (`prec`). The adapter walks each component
+  with a single typed inner loop, applies the sign-shift, clamps to the
+  output range, and writes interleaved channel-major into `out.pixels`.
+  Output is `uint8_t` when `prec ≤ 8`, otherwise little-endian `uint16_t`.
+
+- **Grok (`src/adapter_grok.cpp:unpack_grok_image`):** v20 hands back a
+  planar buffer whose storage type **varies per component**
+  (`GRK_INT_8` / `_16` / `_32`, exposed as `grk_image_comp::data_type`).
+  The adapter dispatches once per component on `data_type` and runs a
+  typed templated inner loop, then applies the same sign-shift / clamp /
+  interleave / endian-pack contract as the OpenJPEG path.
+
+Implications for reading the breakdown:
+
+- Equal `unpack` times between adapters mean equal adapter work. They do
+  not mean the codecs handed back equivalent representations.
+- A faster Grok `unpack` on small 8-bit files is not a Grok-codec win;
+  it is a consequence of Grok returning 1-byte storage (so one-byte
+  loads in the adapter) versus OpenJPEG's always-int32 (four-byte loads).
+- A faster OpenJPEG `unpack` on high-bit-depth content is similarly an
+  adapter-side property; both adapters do `int32 → u16` for `prec > 8`
+  but the type-dispatching overhead lives only on the Grok side and only
+  costs measurable time when there are many small components.
+- Neither adapter does color conversion, ICC application, or alpha
+  compositing. `unpack` is the minimum useful transform — channel
+  interleave + clamp + sign-shift — and nothing else. If you change
+  the unpack to do more (e.g. premultiply for a viewer), the headline
+  numbers will shift and the codec comparison gets noisier; do that in
+  a downstream consumer instead.
+
+Setup, decode, and teardown are codec-internal and are valid for
+codec-to-codec comparison. Unpack is adapter-internal and is **not**.
+When citing a per-stage delta, name which stage and which adapter pair.
+
 ## Thread modes
 
 Two distinct things are conflated by the word "threads"; we measure both:

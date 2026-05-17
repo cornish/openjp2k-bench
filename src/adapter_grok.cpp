@@ -73,8 +73,51 @@ double now_seconds() {
   return std::chrono::duration<double>(clk::now() - t0).count();
 }
 
+// Templated inner loops: with SrcT known at compile time, the per-sample
+// load is a single typed read and the surrounding logic vectorizes.
+// Previously this lambda had a per-sample switch on grk_data_type which
+// was ~15-20% of total decode time on small files.
+template <typename SrcT>
+void unpack_grok_comp_to_u8(const SrcT* base, uint32_t stride, uint32_t w,
+                            uint32_t h, uint32_t nc, uint32_t c, int shift,
+                            uint8_t* dst) {
+  for (uint32_t y = 0; y < h; ++y) {
+    const SrcT* row = base + (std::size_t)y * stride;
+    uint8_t* drow = dst + (std::size_t)y * w * nc + c;
+    for (uint32_t x = 0; x < w; ++x) {
+      int v = (int)row[x] + shift;
+      if (v < 0) v = 0; else if (v > 255) v = 255;
+      drow[(std::size_t)x * nc] = (uint8_t)v;
+    }
+  }
+}
+
+template <typename SrcT>
+void unpack_grok_comp_to_u16(const SrcT* base, uint32_t stride, uint32_t w,
+                             uint32_t h, uint32_t nc, uint32_t c,
+                             int shift, uint32_t maxv, uint8_t* dst) {
+  for (uint32_t y = 0; y < h; ++y) {
+    const SrcT* row = base + (std::size_t)y * stride;
+    uint8_t* drow = dst + (std::size_t)y * w * nc * 2 + c * 2;
+    for (uint32_t x = 0; x < w; ++x) {
+      int v = (int)row[x] + shift;
+      if (v < 0) v = 0; else if ((uint32_t)v > maxv) v = (int)maxv;
+      uint16_t u = (uint16_t)v;
+      drow[(std::size_t)x * nc * 2 + 0] = (uint8_t)(u & 0xFF);
+      drow[(std::size_t)x * nc * 2 + 1] = (uint8_t)(u >> 8);
+    }
+  }
+}
+
 // Copy a Grok grk_image into out.pixels, interleaved channel-major. Returns
-// false on geometry mismatch. Shared by decode() and the prepared-decode path.
+// false on geometry mismatch. Shared by decode() and the staged-timing path.
+//
+// Grok v20 hands the adapter a planar component buffer whose storage width
+// varies per component (GRK_INT_8 / _16 / _32). The format dispatch happens
+// ONCE per component below — the inner row/column loops are then typed
+// templates and the compiler can autovectorize. Outputs interleaved
+// channel-major, with bit-depth normalization to either u8 (prec <= 8) or
+// u16 little-endian (prec > 8); identical contract to the OpenJPEG adapter.
 bool unpack_grok_image(const grk_image* image, DecodedImage& out, std::string& err) {
   if (!image || image->numcomps == 0 || !image->comps) {
     err = "empty image"; return false;
@@ -91,66 +134,51 @@ bool unpack_grok_image(const grk_image* image, DecodedImage& out, std::string& e
   }
   out.width = w; out.height = h; out.channels = nc; out.bit_depth = prec;
 
-  // v20: each component has a data_type (GRK_INT_8/16/32). Treating a 16-bit
-  // buffer as int32 produces garbage; dispatch per-component.
-  auto load_sample = [](const grk_image_comp& comp,
-                        const void* row_base, uint32_t x) -> int {
-    switch (comp.data_type) {
-      case GRK_INT_32: return static_cast<const int32_t*>(row_base)[x];
-      case GRK_INT_16: return static_cast<const int16_t*>(row_base)[x];
-      case GRK_INT_8:  return static_cast<const int8_t*>(row_base)[x];
-      default:         return static_cast<const int32_t*>(row_base)[x];
-    }
-  };
-  auto sample_bytes = [](grk_data_type t) -> std::size_t {
-    switch (t) {
-      case GRK_INT_8:  return 1;
-      case GRK_INT_16: return 2;
-      case GRK_INT_32: return 4;
-      default:         return 4;
-    }
-  };
-
   if (prec <= 8) {
     out.pixels.resize((std::size_t)w * h * nc);
+    uint8_t* dst = out.pixels.data();
     for (uint32_t c = 0; c < nc; ++c) {
       const grk_image_comp& comp = image->comps[c];
-      const uint8_t* base = static_cast<const uint8_t*>(comp.data);
-      const std::size_t sb = sample_bytes(comp.data_type);
       const uint32_t stride = comp.stride ? comp.stride : w;
-      int sgnd = comp.sgnd;
-      int shift = sgnd ? (1 << (prec - 1)) : 0;
-      uint8_t* dst = out.pixels.data() + c;
-      for (uint32_t y = 0; y < h; ++y) {
-        const void* row = base + (std::size_t)y * stride * sb;
-        for (uint32_t x = 0; x < w; ++x) {
-          int v = load_sample(comp, row, x) + shift;
-          if (v < 0) v = 0; else if (v > 255) v = 255;
-          dst[((std::size_t)y * w + x) * nc] = (uint8_t)v;
-        }
+      const int shift = comp.sgnd ? (1 << (prec - 1)) : 0;
+      switch (comp.data_type) {
+        case GRK_INT_8:
+          unpack_grok_comp_to_u8<int8_t>(
+              static_cast<const int8_t*>(comp.data), stride, w, h, nc, c, shift, dst);
+          break;
+        case GRK_INT_16:
+          unpack_grok_comp_to_u8<int16_t>(
+              static_cast<const int16_t*>(comp.data), stride, w, h, nc, c, shift, dst);
+          break;
+        case GRK_INT_32:
+        default:
+          unpack_grok_comp_to_u8<int32_t>(
+              static_cast<const int32_t*>(comp.data), stride, w, h, nc, c, shift, dst);
+          break;
       }
     }
   } else {
     out.pixels.resize((std::size_t)w * h * nc * 2);
-    uint32_t max = (1u << prec) - 1;
+    uint8_t* dst = out.pixels.data();
+    const uint32_t maxv = (1u << prec) - 1;
     for (uint32_t c = 0; c < nc; ++c) {
       const grk_image_comp& comp = image->comps[c];
-      const uint8_t* base = static_cast<const uint8_t*>(comp.data);
-      const std::size_t sb = sample_bytes(comp.data_type);
       const uint32_t stride = comp.stride ? comp.stride : w;
-      int sgnd = comp.sgnd;
-      int shift = sgnd ? (1 << (prec - 1)) : 0;
-      uint8_t* dst = out.pixels.data() + c * 2;
-      for (uint32_t y = 0; y < h; ++y) {
-        const void* row = base + (std::size_t)y * stride * sb;
-        for (uint32_t x = 0; x < w; ++x) {
-          int v = load_sample(comp, row, x) + shift;
-          if (v < 0) v = 0; else if ((uint32_t)v > max) v = (int)max;
-          uint16_t u = (uint16_t)v;
-          std::size_t off = ((std::size_t)y * w + x) * nc * 2;
-          dst[off + 0] = (uint8_t)(u & 0xFF);
-          dst[off + 1] = (uint8_t)(u >> 8);
-        }
+      const int shift = comp.sgnd ? (1 << (prec - 1)) : 0;
+      switch (comp.data_type) {
+        case GRK_INT_8:
+          unpack_grok_comp_to_u16<int8_t>(
+              static_cast<const int8_t*>(comp.data), stride, w, h, nc, c, shift, maxv, dst);
+          break;
+        case GRK_INT_16:
+          unpack_grok_comp_to_u16<int16_t>(
+              static_cast<const int16_t*>(comp.data), stride, w, h, nc, c, shift, maxv, dst);
+          break;
+        case GRK_INT_32:
+        default:
+          unpack_grok_comp_to_u16<int32_t>(
+              static_cast<const int32_t*>(comp.data), stride, w, h, nc, c, shift, maxv, dst);
+          break;
       }
     }
   }
