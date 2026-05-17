@@ -721,7 +721,7 @@ class ManifestToolTest(unittest.TestCase):
         out = self.tmp / name
         cmd = ["opj_compress", "-i", str(src), "-o", str(out)]
         if lossless:
-            cmd += ["-r", "1", "-I"]
+            cmd += ["-r", "1"]   # reversible 5-3 (lossless); -I would select irreversible 9-7 (lossy)
         else:
             cmd += ["-r", "20"]
         if tile:
@@ -1300,7 +1300,7 @@ emit() {
   local outpath="$out_dir/$name.$container"
   [ -f "$outpath" ] && return 0
   local cmd=(opj_compress -i "$src" -o "$outpath" "$@")
-  if [ "$rate" = "lossless" ]; then cmd+=(-r 1 -I); else cmd+=(-r 20); fi
+  if [ "$rate" = "lossless" ]; then cmd+=(-r 1); else cmd+=(-r 20 -I); fi   # -I = irreversible 9-7 (lossy); omit for reversible 5-3 (lossless)
   if ! "${cmd[@]}" >/dev/null 2>&1; then
     echo "  [skip] $name ($container, $rate) — opj_compress rejected the combo"
     return 0
@@ -2402,7 +2402,7 @@ with open('/tmp/tiny.ppm','wb') as f:
         for x in range(w):
             f.write(bytes([(x*2)&0xff, (y*2)&0xff, ((x^y)*3)&0xff]))
 "
-opj_compress -i /tmp/tiny.ppm -o tests/fixtures/tiny.jp2 -r 1 -I
+opj_compress -i /tmp/tiny.ppm -o tests/fixtures/tiny.jp2 -r 1   # reversible 5-3 (lossless)
 ls -la tests/fixtures/tiny.jp2
 ```
 Expected: file is ~3-10 KB.
