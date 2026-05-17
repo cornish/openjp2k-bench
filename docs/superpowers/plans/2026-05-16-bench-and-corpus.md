@@ -1057,7 +1057,17 @@ git commit -m "Add build_manifest.sh wrapper"
 
 ---
 
-## Task 6 — `scripts/fetch_corpus.sh` (public bucket)
+## Task 6 — `scripts/fetch_corpus.sh` (public bucket) — SUPERSEDED
+
+**Status:** Replaced by a symlink to the sibling `openjp2k-data` repo, which
+already provides a richer multi-category fetcher (conformance, archival,
+remote-sensing, medical, cinema) plus a `MANUAL_SOURCES.md` for auth-gated
+sources. See `corpus/README.md` for the setup. The original Task 6 body
+below is kept for historical reference only.
+
+---
+
+### Original Task 6 (not executed)
 
 **Goal:** Download a pinned, SHA256-verified set of public JP2 files into `corpus/public/`. Skip-on-failure semantics — a single dead URL must not break the whole fetch.
 

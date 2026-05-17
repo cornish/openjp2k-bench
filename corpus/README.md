@@ -1,24 +1,23 @@
-# Corpus
+# corpus/
 
-This directory is gitignored. Populate locally with the JPEG 2000 files you
-want to benchmark.
+Inputs the bench runs against. Layout:
 
-Suggested layout:
+- `user/` — Files you drop in by hand. Not tracked, not generated.
+- `synthetic/` — Output of `scripts/gen_corpus.sh` (parametric `opj_compress` grid). Not tracked, regenerate locally.
+- `public/` — Files fetched from public sources (conformance / archival / remote-sensing / medical / cinema). **This repo expects `corpus/public/` to be a symlink to `~/GitHub/openjp2k-data/corpus/`**, the sibling repo that owns the curated fetcher and `MANUAL_SOURCES.md` for auth-gated sources.
 
-```
-corpus/
-  wsi/             # 256x256 RGB tiles extracted from real WSI files
-  large/           # multi-MP JP2K from public datasets
-  synthetic/       # output of scripts/gen_corpus.sh
-  vendor/          # whatever you bring in by hand
-```
-
-To generate a parametric corpus from a single seed image:
+To set it up:
 
 ```sh
-./scripts/gen_corpus.sh /path/to/seed.png
-# writes to corpus/synthetic/
+git clone https://github.com/cornish/openjp2k-data ~/GitHub/openjp2k-data
+~/GitHub/openjp2k-data/fetch_corpus.sh   # downloads what is auto-fetchable
+ln -sfn ~/GitHub/openjp2k-data/corpus corpus/public
 ```
 
-`run_bench.sh` recurses into any directory you point it at and picks up
-every `*.jp2`, `*.j2k`, `*.jpc`.
+After populating any bucket, regenerate `corpus/manifest.json`:
+
+```sh
+./scripts/build_manifest.sh
+```
+
+The manifest records width / height / components / bit depth / tile dims / decomp levels / lossy-vs-lossless / progression / sha256 per file, parsed directly from SIZ + COD markers — no external deps. See `scripts/manifest_tool.py`.

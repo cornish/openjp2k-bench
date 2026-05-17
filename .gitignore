@@ -4,7 +4,15 @@ third_party/
 corpus/*
 !corpus/.gitkeep
 !corpus/README.md
+!corpus/user
+!corpus/synthetic
+corpus/user/*
+corpus/synthetic/*
+!corpus/user/.gitkeep
+!corpus/synthetic/.gitkeep
 *.json
 !docs/*.json
 .cache/
 compile_commands.json
+__pycache__/
+*.pyc

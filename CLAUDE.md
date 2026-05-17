@@ -56,6 +56,11 @@ trusting the timing numbers.
 - **[cornish/openjp2k](https://github.com/cornish/openjp2k)** — the
   performance fork under test. Point `--openjpeg-source` at a local
   checkout to bench it.
+- **[cornish/openjp2k-data](https://github.com/cornish/openjp2k-data)** —
+  owns the curated public corpus (conformance / archival / remote-sensing /
+  medical / cinema) plus `MANUAL_SOURCES.md` for auth-gated sources.
+  `corpus/public/` in this repo is a symlink to that repo's `corpus/`. See
+  `corpus/README.md` for setup.
 - **[cornish/openscope](https://github.com/cornish/openscope)** — the
   WSI viewer whose tile-decode pattern (one tile, often partial region)
   this benchmark is shaped to mimic. Real workload validation happens
