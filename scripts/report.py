@@ -11,7 +11,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -136,6 +138,189 @@ def _aggregate_summary(results: list[dict], group_by: str) -> None:
         print(f"{dec:<10} {str(g)[:20]:<20} {len(vals):>5} {median(vals):>14.2f}")
 
 
+def _row_key(r: dict) -> tuple:
+    """Identity tuple for pairing baseline and compare runs.
+    Same file + decoder + threads + roi-or-not + ROI dims."""
+    roi = r.get("roi")
+    roi_key = (roi["x0"], roi["y0"], roi["x1"], roi["y1"]) if roi else None
+    return (r["file"], r["decoder"], r["threads"], roi_key)
+
+
+# Tab-separated dump of result rows; flat schema for downstream perf-log
+# tooling that doesn't want to walk the JSON tree.
+_TSV_COLUMNS = [
+    "file", "decoder", "decoder_version", "threads", "has_roi",
+    "roi_x0", "roi_y0", "roi_x1", "roi_y1",
+    "width", "height", "channels", "bit_depth",
+    "iters", "warmup",
+    "t_min_s", "t_p50_s", "t_p90_s", "t_p99_s", "t_max_s",
+    "t_mean_s", "t_stddev_s",
+    "megapixels_per_sec",
+    "pixel_match", "pixel_psnr_db",
+    "rss_peak_kb", "rss_delta_kb",
+    "error",
+]
+
+
+def _write_tsv(path: Path, results: list[dict]) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f, delimiter="\t", lineterminator="\n")
+        w.writerow(_TSV_COLUMNS)
+        for r in results:
+            roi = r.get("roi") or {}
+            ts = r.get("timing_s") or {}
+            w.writerow([
+                r.get("file", ""),
+                r.get("decoder", ""),
+                r.get("decoder_version", ""),
+                r.get("threads", ""),
+                "1" if r.get("roi") else "0",
+                roi.get("x0", ""), roi.get("y0", ""),
+                roi.get("x1", ""), roi.get("y1", ""),
+                r.get("width", ""), r.get("height", ""),
+                r.get("channels", ""), r.get("bit_depth", ""),
+                r.get("iters", ""), r.get("warmup", ""),
+                ts.get("min", ""), ts.get("p50", ""),
+                ts.get("p90", ""), ts.get("p99", ""),
+                ts.get("max", ""),
+                ts.get("mean", ""), ts.get("stddev", ""),
+                r.get("megapixels_per_sec", ""),
+                r.get("pixel_match", ""),
+                r.get("pixel_psnr_db") if r.get("pixel_psnr_db") is not None else "",
+                r.get("rss_peak_kb", ""),
+                r.get("rss_delta_kb", ""),
+                r.get("error", ""),
+            ])
+
+
+def _normal_sf(z: float) -> float:
+    """Upper-tail survival function of the standard normal. erfc-based;
+    stdlib-only, no scipy. ~1e-7 accurate, fine for our gate."""
+    return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+
+def _wilcoxon_signed_rank(deltas: list[float]) -> tuple[float, float, int]:
+    """Two-sided Wilcoxon signed-rank test on paired deltas.
+
+    Returns (W_plus, p_value, n_effective). Zero deltas are dropped per
+    Pratt's recommendation; ties get average ranks. Uses the normal
+    approximation with continuity correction (valid for n >= ~10).
+    """
+    nz = [d for d in deltas if d != 0.0]
+    n = len(nz)
+    if n == 0:
+        return (0.0, 1.0, 0)
+    abs_d = sorted(((abs(d), 1 if d > 0 else -1) for d in nz), key=lambda x: x[0])
+    # Average-rank assignment over ties on |d|.
+    ranks = [0.0] * n
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs_d[j + 1][0] == abs_d[i][0]:
+            j += 1
+        avg = (i + j) / 2.0 + 1.0  # ranks are 1-based
+        for k in range(i, j + 1):
+            ranks[k] = avg
+        i = j + 1
+    w_plus = sum(r for r, (_, s) in zip(ranks, abs_d) if s > 0)
+    # Tie-correction adjustment to the variance.
+    tie_term = 0.0
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and abs_d[j + 1][0] == abs_d[i][0]:
+            j += 1
+        t = j - i + 1
+        if t > 1:
+            tie_term += (t ** 3 - t)
+        i = j + 1
+    mean = n * (n + 1) / 4.0
+    var = n * (n + 1) * (2 * n + 1) / 24.0 - tie_term / 48.0
+    if var <= 0:
+        return (w_plus, 1.0, n)
+    # Continuity correction.
+    if w_plus > mean:
+        z = (w_plus - 0.5 - mean) / math.sqrt(var)
+    elif w_plus < mean:
+        z = (w_plus + 0.5 - mean) / math.sqrt(var)
+    else:
+        z = 0.0
+    p = 2.0 * _normal_sf(abs(z))
+    return (w_plus, min(1.0, p), n)
+
+
+def _print_gate(base_results: list[dict], cmp_results: list[dict],
+                alpha: float, regression_threshold_pct: float) -> int:
+    """§2.7 merge-gate decision. Returns process exit code: 0 pass, 1 fail.
+
+    Pass criteria:
+      - No paired row regresses by more than `regression_threshold_pct` percent
+        on min decode time (a hard floor that ignores significance).
+      - The Wilcoxon signed-rank test on (compare - baseline) min decode time
+        either shows no significant change (p > alpha) or a significant
+        improvement (signed sum negative => compare faster).
+    """
+    cmp_idx = {_row_key(r): r for r in cmp_results}
+    deltas: list[float] = []          # (cmp_min - base_min) seconds
+    pct_deltas: list[tuple[str, float]] = []  # (label, pct)
+    for b in base_results:
+        if b.get("error"):
+            continue
+        c = cmp_idx.get(_row_key(b))
+        if not c or c.get("error"):
+            continue
+        bm = b["timing_s"]["min"]
+        cm = c["timing_s"]["min"]
+        if bm <= 0:
+            continue
+        deltas.append(cm - bm)
+        pct = (cm - bm) / bm * 100.0
+        label = f"{Path(b['file']).name[:32]} {b['decoder']} t={b['threads']}"
+        pct_deltas.append((label, pct))
+
+    if not deltas:
+        print("gate: no paired rows; nothing to compare", file=sys.stderr)
+        return 1
+
+    w, p, n = _wilcoxon_signed_rank(deltas)
+    mean_d = sum(deltas) / len(deltas)
+    median_d = median(deltas)
+    median_pct = median(p for _, p in pct_deltas)
+    worst = max(pct_deltas, key=lambda x: x[1])
+
+    print()
+    print("-- §2.7 merge gate --")
+    print(f"paired rows           : {len(deltas)}")
+    print(f"median Δmin           : {median_d*1e3:+.3f} ms ({median_pct:+.2f}%)")
+    print(f"mean Δmin             : {mean_d*1e3:+.3f} ms")
+    print(f"worst-case regression : {worst[1]:+.2f}%  ({worst[0]})")
+    print(f"Wilcoxon W+           : {w:.1f}")
+    print(f"signed-rank p-value   : {p:.4g}  (n_eff={n})")
+
+    verdict_lines: list[str] = []
+    failed = False
+    if worst[1] > regression_threshold_pct:
+        verdict_lines.append(
+            f"FAIL: worst-case regression {worst[1]:+.2f}% exceeds "
+            f"threshold {regression_threshold_pct:+.2f}%")
+        failed = True
+    if p < alpha and median_d > 0:
+        verdict_lines.append(
+            f"FAIL: significant slowdown (p={p:.4g} < α={alpha}, "
+            f"median Δ={median_d*1e3:+.3f} ms)")
+        failed = True
+    if not failed:
+        if p < alpha and median_d < 0:
+            verdict_lines.append(
+                f"PASS: significant speedup (p={p:.4g}, median Δ={median_d*1e3:+.3f} ms)")
+        else:
+            verdict_lines.append(
+                f"PASS: no significant regression (p={p:.4g})")
+    for line in verdict_lines:
+        print(line)
+    return 1 if failed else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("baseline", help="results JSON (schema v2)")
@@ -148,6 +333,17 @@ def main() -> int:
                          "progression, lossless, etc.")
     ap.add_argument("--filter", default="",
                     help="key=value[,key=value...] predicate on result fields")
+    ap.add_argument("--tsv", type=Path, default=None,
+                    help="also write a flat TSV of baseline results to this path")
+    ap.add_argument("--gate", action="store_true",
+                    help="enable §2.7 merge-gate mode: print signed-rank verdict "
+                         "and return non-zero exit on regression "
+                         "(requires baseline + compare)")
+    ap.add_argument("--alpha", type=float, default=0.05,
+                    help="significance threshold for the gate's signed-rank test")
+    ap.add_argument("--regression-threshold-pct", type=float, default=5.0,
+                    help="hard ceiling on per-row regression in %% min-time; "
+                         "any row over this fails the gate regardless of p-value")
     args = ap.parse_args()
 
     base = _load(args.baseline)
@@ -169,6 +365,17 @@ def main() -> int:
 
     _per_file_table(base["results"], cmp["results"] if cmp else None)
     _aggregate_summary(base["results"], args.group_by)
+
+    if args.tsv:
+        _write_tsv(args.tsv, base["results"])
+        print(f"[tsv] wrote {args.tsv}", file=sys.stderr)
+
+    if args.gate:
+        if not cmp:
+            print("--gate requires both baseline and compare arguments", file=sys.stderr)
+            return 2
+        return _print_gate(base["results"], cmp["results"],
+                           args.alpha, args.regression_threshold_pct)
     return 0
 
 
