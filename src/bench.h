@@ -28,6 +28,8 @@ struct FileResult {
   // If a previous decoder produced output for this file, did pixels match?
   // -1 = no prior, 0 = mismatch, 1 = match.
   int pixel_match = -1;
+  uint64_t rss_peak_kb = 0;     // highest peak RSS observed at end of any timed iter
+  int64_t  rss_delta_kb = 0;    // max (peak_after - peak_before) across timed iters
   std::string error;
 };
 

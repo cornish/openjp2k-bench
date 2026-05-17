@@ -1,4 +1,5 @@
 #include "bench.h"
+#include "rss.h"
 
 #include <algorithm>
 #include <cmath>
@@ -84,13 +85,17 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
     }
   }
 
+  uint64_t peak_observed = 0;
+  int64_t  max_delta = 0;
   std::vector<double> times;
   times.reserve(opts.iters);
   for (int i = 0; i < opts.iters; ++i) {
     img.pixels.clear();
+    uint64_t rss_before = peak_rss_kb();
     double t0 = now_seconds();
     bool ok = decoder.decode(blob.data(), blob.size(), threads, img, err);
     double t1 = now_seconds();
+    uint64_t rss_after = peak_rss_kb();
     if (!ok) {
       r.error = "iter: " + err;
       r.stats = summarize(times);
@@ -98,9 +103,14 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
       return r;
     }
     times.push_back(t1 - t0);
+    if (rss_after > peak_observed) peak_observed = rss_after;
+    int64_t delta = (int64_t)rss_after - (int64_t)rss_before;
+    if (delta > max_delta) max_delta = delta;
   }
   r.stats = summarize(times);
   r.stats.warmup = opts.warmup;
+  r.rss_peak_kb  = peak_observed;
+  r.rss_delta_kb = max_delta;
   if (r.stats.min > 0) {
     double mpx = (double)img.width * (double)img.height / 1.0e6;
     r.megapixels_per_sec = mpx / r.stats.min;

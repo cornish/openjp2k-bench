@@ -51,6 +51,8 @@ void emit_result(std::ostream& os, const FileResult& r) {
   os << "}, ";
   os << "\"megapixels_per_sec\": " << r.megapixels_per_sec << ", ";
   os << "\"pixel_match\": " << r.pixel_match << ", ";
+  os << "\"rss_peak_kb\": "  << r.rss_peak_kb  << ", ";
+  os << "\"rss_delta_kb\": " << r.rss_delta_kb << ", ";
   os << "\"error\": \"" << json_escape(r.error) << "\"";
   os << "}";
 }
