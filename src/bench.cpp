@@ -57,10 +57,22 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   DecodedImage img;
   std::string err;
 
+  r.has_roi = opts.has_roi;
+  r.roi_x0 = opts.roi_x0; r.roi_y0 = opts.roi_y0;
+  r.roi_x1 = opts.roi_x1; r.roi_y1 = opts.roi_y1;
+
+  auto do_decode = [&](DecodedImage& target) -> bool {
+    if (opts.has_roi) {
+      Decoder::Region rg{opts.roi_x0, opts.roi_y0, opts.roi_x1, opts.roi_y1};
+      return decoder.decode_region(blob.data(), blob.size(), threads, rg, target, err);
+    }
+    return decoder.decode(blob.data(), blob.size(), threads, target, err);
+  };
+
   // Warmup. Discard timings; warm allocator, branch predictor, code cache.
   for (int i = 0; i < opts.warmup; ++i) {
     img.pixels.clear();
-    if (!decoder.decode(blob.data(), blob.size(), threads, img, err)) {
+    if (!do_decode(img)) {
       r.error = "warmup: " + err;
       r.stats.warmup = opts.warmup;
       return r;
@@ -93,7 +105,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
     img.pixels.clear();
     uint64_t rss_before = peak_rss_kb();
     double t0 = now_seconds();
-    bool ok = decoder.decode(blob.data(), blob.size(), threads, img, err);
+    bool ok = do_decode(img);
     double t1 = now_seconds();
     uint64_t rss_after = peak_rss_kb();
     if (!ok) {

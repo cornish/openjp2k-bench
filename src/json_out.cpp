@@ -50,6 +50,12 @@ void emit_result(std::ostream& os, const FileResult& r) {
   os << "\"stddev\": " << r.stats.stddev;
   os << "}, ";
   os << "\"megapixels_per_sec\": " << r.megapixels_per_sec << ", ";
+  if (r.has_roi) {
+    os << "\"roi\": {\"x0\": " << r.roi_x0 << ", \"y0\": " << r.roi_y0
+       << ", \"x1\": " << r.roi_x1 << ", \"y1\": " << r.roi_y1 << "}, ";
+  } else {
+    os << "\"roi\": null, ";
+  }
   os << "\"pixel_match\": " << r.pixel_match << ", ";
   os << "\"rss_peak_kb\": "  << r.rss_peak_kb  << ", ";
   os << "\"rss_delta_kb\": " << r.rss_delta_kb << ", ";

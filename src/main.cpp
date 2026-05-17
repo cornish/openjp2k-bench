@@ -11,6 +11,7 @@
 //                         with grok enabled pins the pool to the first N)
 //   --decoder NAME       only run named decoder (openjpeg, grok)
 //   --no-verify          skip cross-decoder pixel comparison
+//   --roi WxH@X,Y        decode only the given region (e.g. 256x256@0,0)
 //   --list-decoders      print available decoders and exit
 //
 // Output: JSON array on stdout, one entry per (file, decoder, threads) run.
@@ -74,6 +75,22 @@ int main(int argc, char** argv) {
     else if (a == "--threads") opts.thread_counts = parse_int_list(need("--threads"));
     else if (a == "--decoder") only_decoder = need("--decoder");
     else if (a == "--no-verify") opts.verify = false;
+    else if (a == "--roi") {
+      // Format: WxH@X,Y  e.g. 1024x1024@0,0
+      std::string v = need("--roi");
+      uint32_t w=0,h=0,x=0,y=0;
+      if (std::sscanf(v.c_str(), "%ux%u@%u,%u", &w, &h, &x, &y) != 4) {
+        std::cerr << "--roi expects WxH@X,Y\n"; return 2;
+      }
+      opts.has_roi = true;
+      opts.roi_x0 = x; opts.roi_y0 = y;
+      opts.roi_x1 = x + w; opts.roi_y1 = y + h;
+    }
+    else if (a == "--roi-tile") {
+      need("--roi-tile");  // consume the arg
+      std::cerr << "--roi-tile not yet implemented; use --roi WxH@X,Y\n";
+      return 2;
+    }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
 #if JP2KBENCH_HAVE_GROK
@@ -147,9 +164,14 @@ int main(int argc, char** argv) {
       // Capture a reference at threads=1 from the first decoder only.
       if (opts.verify && !have_ref && d.get() == decoders.front().get()) {
         std::string err;
-        if (d->decode(blob.data(), blob.size(), 1, ref_image, err)) {
-          have_ref = true;
+        bool ok;
+        if (opts.has_roi) {
+          Decoder::Region rg{opts.roi_x0, opts.roi_y0, opts.roi_x1, opts.roi_y1};
+          ok = d->decode_region(blob.data(), blob.size(), 1, rg, ref_image, err);
+        } else {
+          ok = d->decode(blob.data(), blob.size(), 1, ref_image, err);
         }
+        if (ok) have_ref = true;
       }
       for (int t : opts.thread_counts) {
         std::cerr << path << "  " << d->name() << "  t=" << t << "  ... ";

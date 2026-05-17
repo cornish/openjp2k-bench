@@ -91,6 +91,9 @@ class GrokDecoder : public Decoder {
   const char* name() const override { return "grok"; }
   std::string version() const override { return grk_version(); }
 
+  bool native_region_decode() const override { return false; }
+  // decode_region uses the base-class default (full decode + crop).
+
   bool decode(const uint8_t* data, std::size_t size, int num_threads,
               DecodedImage& out, std::string& err) override {
     // See top-of-file "Concurrent-decode safety" note for why decode() is
