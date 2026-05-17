@@ -36,6 +36,8 @@ struct FileResult {
   // Region actually timed; has_roi=false => null in JSON.
   bool has_roi = false;
   uint32_t roi_x0 = 0, roi_y0 = 0, roi_x1 = 0, roi_y1 = 0;
+  // True iff prepare() actually hoisted nontrivial work for this row.
+  bool reused_codec = false;
   std::string error;
 };
 
@@ -49,6 +51,9 @@ struct BenchOptions {
   // is passed verbatim to decode_region.
   bool has_roi = false;
   uint32_t roi_x0 = 0, roi_y0 = 0, roi_x1 = 0, roi_y1 = 0;
+  // If true, prepare() the codec once and reuse for all iters. Isolates the
+  // hot decode path from per-iter codec setup cost.
+  bool reuse_codec = false;
 };
 
 RunStats summarize(std::vector<double>& times_seconds);

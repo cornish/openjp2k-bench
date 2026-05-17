@@ -26,6 +26,21 @@ struct DecodedImage {
   }
 };
 
+class Decoder;
+
+// Opaque handle returned by Decoder::prepare(). Lifetime: created outside
+// the timed loop; decode() invoked N times inside it. Whatever per-iter
+// setup cost the adapter can hoist out of decode() is hoisted into the
+// prepare() that produced this object. Adapters that genuinely cannot
+// hoist anything (e.g. codec is single-use) return a wrapper that just
+// reruns Decoder::decode() each call; the timed numbers will then match
+// one-shot mode for that adapter, which is informative on its own.
+class PreparedDecode {
+ public:
+  virtual ~PreparedDecode() = default;
+  virtual bool decode(int num_threads, DecodedImage& out, std::string& err) = 0;
+};
+
 class Decoder {
  public:
   virtual ~Decoder() = default;
@@ -47,6 +62,17 @@ class Decoder {
                              DecodedImage& out, std::string& err);
 
   virtual bool native_region_decode() const { return false; }
+
+  // Build a PreparedDecode that hoists per-iter setup. Default = trivial
+  // wrapper that reruns decode() each call (no hoisting). Adapters that
+  // can reuse their codec handle should override.
+  virtual std::unique_ptr<PreparedDecode> prepare(
+      const uint8_t* data, std::size_t size, std::string& err);
+
+  // True if prepare() actually hoists nontrivial work. Reported in JSON
+  // so consumers can distinguish "we measured per-iter setup amortization"
+  // from "this adapter has no reuse path."
+  virtual bool supports_codec_reuse() const { return false; }
 };
 
 inline bool Decoder::decode_region(const uint8_t* data, std::size_t size,
@@ -69,6 +95,29 @@ inline bool Decoder::decode_region(const uint8_t* data, std::size_t size,
   out.width  = bw;
   out.height = bh;
   return true;
+}
+
+namespace detail {
+// Trivial PreparedDecode: rebuilds the codec every call. Used by the default
+// Decoder::prepare() so an adapter that doesn't override still works under
+// --reuse-codec (just without amortization).
+class OneShotPrepared : public PreparedDecode {
+ public:
+  OneShotPrepared(Decoder* d, const uint8_t* data, std::size_t size)
+      : d_(d), data_(data), size_(size) {}
+  bool decode(int num_threads, DecodedImage& out, std::string& err) override {
+    return d_->decode(data_, size_, num_threads, out, err);
+  }
+ private:
+  Decoder* d_;
+  const uint8_t* data_;
+  std::size_t size_;
+};
+}  // namespace detail
+
+inline std::unique_ptr<PreparedDecode> Decoder::prepare(
+    const uint8_t* data, std::size_t size, std::string& /*err*/) {
+  return std::make_unique<detail::OneShotPrepared>(this, data, size);
 }
 
 std::unique_ptr<Decoder> make_openjpeg_decoder();

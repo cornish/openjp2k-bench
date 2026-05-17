@@ -158,6 +158,7 @@ _TSV_COLUMNS = [
     "megapixels_per_sec",
     "pixel_match", "pixel_psnr_db",
     "rss_peak_kb", "rss_delta_kb",
+    "reused_codec",
     "error",
 ]
 
@@ -189,6 +190,7 @@ def _write_tsv(path: Path, results: list[dict]) -> None:
                 r.get("pixel_psnr_db") if r.get("pixel_psnr_db") is not None else "",
                 r.get("rss_peak_kb", ""),
                 r.get("rss_delta_kb", ""),
+                "1" if r.get("reused_codec") else "0",
                 r.get("error", ""),
             ])
 

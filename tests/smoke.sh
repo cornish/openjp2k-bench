@@ -60,7 +60,25 @@ agg = d['aggregate']
 assert 'concurrent_throughput_mpix_s' in agg, agg
 " || { echo "FAIL concurrent"; exit 1; }
 
-# 5. report.py runs against the basic output.
+# 5. --reuse-codec accepted; reused_codec field present per row. Current
+#    state: both adapters report false (Grok v20 segfaults on second
+#    grk_decompress; OpenJPEG has no reset API). The flag is wired but a
+#    no-op until an adapter grows real reuse; smoke just asserts the
+#    field exists and the bench doesn't crash.
+out=$(run reuse --iters 2 --warmup 1 --reuse-codec)
+python3 -c "
+import json
+d = json.load(open('$out'))
+for r in d['results']:
+    assert 'reused_codec' in r, 'reused_codec field missing'
+" || { echo "FAIL reuse-codec"; exit 1; }
+
+# 6. --require-clean exits 0 when trees are clean (this CI's trees are
+#    pinned upstream tags, so always clean from the bench's POV).
+"$BIN" --require-clean --iters 1 --warmup 1 "$FIX" >/dev/null 2>&1 \
+  || { echo "FAIL require-clean against clean trees"; exit 1; }
+
+# 7. report.py runs against the basic output.
 python3 "$ROOT/scripts/report.py" "$TMP/basic.json" >/dev/null \
   || { echo "FAIL report.py"; exit 1; }
 

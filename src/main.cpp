@@ -14,6 +14,9 @@
 //   --roi WxH@X,Y        decode only the given region (e.g. 256x256@0,0)
 //   --concurrent-files N parallel bench jobs (per-file blob held once)    [1]
 //   --require-clean      exit 3 if any tracked library tree is dirty
+//   --reuse-codec        prepare the codec once per file, reuse across iters
+//                        (isolates steady-state decode from per-iter setup;
+//                         ROI mode is unaffected by this flag)
 //   --list-decoders      print available decoders and exit
 //
 // Output: JSON array on stdout, one entry per (file, decoder, threads) run.
@@ -106,6 +109,9 @@ int main(int argc, char** argv) {
     }
     else if (a == "--require-clean") {
       require_clean = true;
+    }
+    else if (a == "--reuse-codec") {
+      opts.reuse_codec = true;
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";

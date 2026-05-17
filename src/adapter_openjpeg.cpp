@@ -1,5 +1,14 @@
 // OpenJPEG decoder adapter. Uses the in-memory stream pattern documented in
 // openjpeg's examples — openjpeg ships no built-in memory stream.
+//
+// Note on --reuse-codec: this adapter intentionally does NOT override
+// Decoder::prepare(). OpenJPEG's codec is consumed by opj_decode +
+// opj_end_decompress and has no public reset API; reusing the same
+// opj_codec_t* across iterations is not documented and observed to
+// crash on second decode in informal testing. Under --reuse-codec the
+// base-class OneShotPrepared wrapper falls back to per-iter codec
+// recreation, so OpenJPEG's reuse-mode numbers match its one-shot
+// numbers and the JSON's `reused_codec` flag stays false for these rows.
 
 #include "adapter.h"
 

@@ -62,10 +62,31 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.roi_x0 = opts.roi_x0; r.roi_y0 = opts.roi_y0;
   r.roi_x1 = opts.roi_x1; r.roi_y1 = opts.roi_y1;
 
+  // --reuse-codec: hoist whatever per-iter setup the adapter can hoist out
+  // of the timed region. ROI mode goes through decode_region which the
+  // prepared-decode handle doesn't currently support; reuse_codec + ROI
+  // falls back to one-shot per iter (recorded on the row).
+  std::unique_ptr<PreparedDecode> prepared;
+  bool actually_reused = false;
+  if (opts.reuse_codec && !opts.has_roi) {
+    std::string perr;
+    prepared = decoder.prepare(blob.data(), blob.size(), perr);
+    if (!prepared) {
+      r.error = "prepare: " + perr;
+      r.stats.warmup = opts.warmup;
+      return r;
+    }
+    actually_reused = decoder.supports_codec_reuse();
+  }
+  r.reused_codec = actually_reused;
+
   auto do_decode = [&](DecodedImage& target) -> bool {
     if (opts.has_roi) {
       Decoder::Region rg{opts.roi_x0, opts.roi_y0, opts.roi_x1, opts.roi_y1};
       return decoder.decode_region(blob.data(), blob.size(), threads, rg, target, err);
+    }
+    if (prepared) {
+      return prepared->decode(threads, target, err);
     }
     return decoder.decode(blob.data(), blob.size(), threads, target, err);
   };
