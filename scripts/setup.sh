@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch openjpeg and grok at pinned commits into third_party/.
+# Fetch openjpeg, grok, and openjp2k at pinned commits into third_party/.
 # Idempotent: re-running updates pinned refs but skips clean clones.
 
 set -euo pipefail
@@ -16,6 +16,9 @@ OPENJPEG_REF="v2.5.3"
 
 GROK_URL="https://github.com/GrokImageCompression/grok.git"
 GROK_REF="v20.3.3"   # adjust if API changes break adapter_grok.cpp
+
+OPENJP2K_URL="https://github.com/cornish/openjp2k.git"
+OPENJP2K_REF="101b3a0b60073a7236acbe2d0b1ccf4512a30b0e"   # main @ 2026-05-17
 # ---------------------------------------------------------------------------
 
 clone_or_update() {
@@ -38,6 +41,12 @@ if [ "${SKIP_GROK:-0}" = "1" ]; then
   echo "[setup] SKIP_GROK=1; not fetching grok"
 else
   clone_or_update "$GROK_URL" "$GROK_REF" "$TP/grok"
+fi
+
+if [ "${SKIP_OPENJP2K:-0}" = "1" ]; then
+  echo "[setup] SKIP_OPENJP2K=1; not fetching openjp2k"
+else
+  clone_or_update "$OPENJP2K_URL" "$OPENJP2K_REF" "$TP/openjp2k"
 fi
 
 echo "[setup] done. Next: ./scripts/build.sh"

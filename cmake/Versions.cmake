@@ -21,13 +21,14 @@ function(_jp2kbench_git_describe out_var path)
   set(${out_var} "${_sha}" PARENT_SCOPE)
 endfunction()
 
-# OpenJPEG: version comes from its CMake (OPENJPEG_VERSION) once added.
+# OpenJPEG (vanilla baseline). Version is read at runtime via opj_version()
+# on the dlopen'd lib, so we just record the git describe string here.
 _jp2kbench_git_describe(JP2KBENCH_OPENJPEG_COMMIT_STR "${JP2KBENCH_OPENJPEG_SOURCE}")
-if(DEFINED OPENJPEG_VERSION)
-  set(JP2KBENCH_OPENJPEG_VERSION_STR "${OPENJPEG_VERSION}")
-else()
-  set(JP2KBENCH_OPENJPEG_VERSION_STR "unknown")
-endif()
+set(JP2KBENCH_OPENJPEG_VERSION_STR "runtime")
+
+# openjp2k (fork under test). Same treatment.
+_jp2kbench_git_describe(JP2KBENCH_OPENJP2K_COMMIT_STR "${JP2KBENCH_OPENJP2K_SOURCE}")
+set(JP2KBENCH_OPENJP2K_VERSION_STR "runtime")
 
 # Grok
 if(JP2KBENCH_HAVE_GROK)

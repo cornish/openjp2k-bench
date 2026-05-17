@@ -77,6 +77,9 @@ std::string capture_env_json() {
   os <<   "\"openjpeg\": {"
      <<   "\"version\": \"" << json_escape(JP2KBENCH_OPENJPEG_VERSION) << "\", "
      <<   "\"commit\": \""  << json_escape(JP2KBENCH_OPENJPEG_COMMIT)  << "\"}";
+  os << ", \"openjp2k\": {"
+     <<   "\"version\": \"" << json_escape(JP2KBENCH_OPENJP2K_VERSION) << "\", "
+     <<   "\"commit\": \""  << json_escape(JP2KBENCH_OPENJP2K_COMMIT)  << "\"}";
   os << ", \"grok\": {"
      <<   "\"version\": \"" << json_escape(JP2KBENCH_GROK_VERSION) << "\", "
      <<   "\"commit\": \""  << json_escape(JP2KBENCH_GROK_COMMIT)  << "\"}";

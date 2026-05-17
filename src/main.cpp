@@ -9,7 +9,7 @@
 //   --threads N[,N...]   thread counts to sweep                          [1]
 //                        (note: Grok's pool is process-singleton; sweeping
 //                         with grok enabled pins the pool to the first N)
-//   --decoder NAME       only run named decoder (openjpeg, grok)
+//   --decoder NAME       only run named decoder (openjpeg, openjp2k, grok)
 //   --no-verify          skip cross-decoder pixel comparison
 //   --roi WxH@X,Y        decode only the given region (e.g. 256x256@0,0)
 //   --concurrent-files N parallel bench jobs (per-file blob held once)    [1]
@@ -129,6 +129,7 @@ int main(int argc, char** argv) {
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
+      std::cout << "openjp2k\n";
 #if JP2KBENCH_HAVE_GROK
       std::cout << "grok\n";
 #endif
@@ -151,7 +152,10 @@ int main(int argc, char** argv) {
 
   std::vector<std::unique_ptr<Decoder>> decoders;
   if (only_decoder.empty() || only_decoder == "openjpeg") {
-    decoders.push_back(make_openjpeg_decoder());
+    if (auto d = make_openjpeg_decoder()) decoders.push_back(std::move(d));
+  }
+  if (only_decoder.empty() || only_decoder == "openjp2k") {
+    if (auto d = make_openjp2k_decoder()) decoders.push_back(std::move(d));
   }
 #if JP2KBENCH_HAVE_GROK
   if (only_decoder.empty() || only_decoder == "grok") {
@@ -159,7 +163,7 @@ int main(int argc, char** argv) {
   }
 #endif
   if (decoders.empty()) {
-    std::cerr << "no decoders selected (unknown name?)\n"; return 2;
+    std::cerr << "no decoders available (load failure or unknown name?)\n"; return 2;
   }
 
   std::cerr << "decoders:";
@@ -170,14 +174,17 @@ int main(int argc, char** argv) {
   // working tree with uncommitted changes. The describe string from
   // cmake/Versions.cmake appends "-dirty" when this is the case.
   if (require_clean) {
-    std::string oj = JP2KBENCH_OPENJPEG_COMMIT;
-    std::string gk = JP2KBENCH_GROK_COMMIT;
-    bool dirty = (oj.size() >= 6 && oj.find("-dirty") != std::string::npos) ||
-                 (gk.size() >= 6 && gk.find("-dirty") != std::string::npos);
-    if (dirty) {
+    std::string oj  = JP2KBENCH_OPENJPEG_COMMIT;
+    std::string ok2 = JP2KBENCH_OPENJP2K_COMMIT;
+    std::string gk  = JP2KBENCH_GROK_COMMIT;
+    auto dirty = [](const std::string& s) {
+      return s.find("-dirty") != std::string::npos;
+    };
+    if (dirty(oj) || dirty(ok2) || dirty(gk)) {
       std::cerr << "--require-clean: refusing to run, dirty source tree:";
-      if (oj.find("-dirty") != std::string::npos) std::cerr << " openjpeg=" << oj;
-      if (gk.find("-dirty") != std::string::npos) std::cerr << " grok=" << gk;
+      if (dirty(oj))  std::cerr << " openjpeg=" << oj;
+      if (dirty(ok2)) std::cerr << " openjp2k=" << ok2;
+      if (dirty(gk))  std::cerr << " grok=" << gk;
       std::cerr << "\n";
       return 3;
     }

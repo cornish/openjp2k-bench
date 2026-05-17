@@ -148,6 +148,7 @@ inline std::unique_ptr<PreparedDecode> Decoder::prepare(
 }
 
 std::unique_ptr<Decoder> make_openjpeg_decoder();
+std::unique_ptr<Decoder> make_openjp2k_decoder();
 
 #if JP2KBENCH_HAVE_GROK
 std::unique_ptr<Decoder> make_grok_decoder();
