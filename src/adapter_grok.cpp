@@ -6,6 +6,8 @@
 //   is no per-codec or per-call API to change the thread count without
 //   tearing the pool down (grk_deinitialize + grk_initialize), which would
 //   pollute the timed region of the benchmark.
+//   // Grok's API exposes a singleton thread pool; per-codec thread tuning
+//   // is intentionally not supported.
 //
 //   We therefore initialize Grok lazily on the first decode() call with the
 //   requested thread count.  Subsequent decode() calls with a *different*
@@ -14,6 +16,20 @@
 //   the Grok decoder.  This is documented; users running thread sweeps
 //   against Grok should run each thread count in a separate process
 //   (e.g. one bench invocation per --threads value).
+//
+// Concurrent-decode safety:
+//   Grok v20's public headers do not document whether multiple decode()
+//   calls on distinct codec handles are safe to run in parallel from
+//   different threads (the shared Taskflow pool described in
+//   third_party/grok/src/lib/core/grok.h around grk_initialize complicates
+//   this — multiple decodes would contend for the same workers, and there
+//   is no header-level guarantee that grk_decompress_init / grk_decompress
+//   are reentrant across handles).  Until upstream documents otherwise,
+//   we serialize the entire decode() body behind decode_mu_.  For the
+//   upcoming --concurrent-files mode (Task 10) this means Grok will
+//   effectively run one decode at a time even when the bench dispatches
+//   N in parallel; that is the conservative correctness choice.  Revisit
+//   if/when Grok upstream documents per-handle concurrency.
 //
 // Pixel-format contract: must match adapter_openjpeg.cpp.  Interleaved,
 // channel-major within a pixel.  prec <= 8 => 1 byte/sample; prec > 8 =>
@@ -24,6 +40,7 @@
 
 #include <cstring>
 #include <mutex>
+#include <string>
 
 extern "C" {
 #include <grok.h>
@@ -32,7 +49,22 @@ extern "C" {
 namespace jp2kbench {
 namespace {
 
-void silent(const char*, void*) {}
+// Grok v20 message-handler callback signature (see grk_msg_callback typedef
+// at third_party/grok/src/lib/core/grok.h:178). Kept separate from the
+// OpenJPEG adapter's silent() to avoid sharing a callback across two APIs
+// whose typedefs could diverge in future versions.
+void grok_silent(const char*, void*) {}
+
+// Thread-local last-error scratchpad. Grok's error_callback fires from
+// internal worker threads; we capture the most recent message so decode()
+// can surface it via the err out-param when grk_decompress_init / read_header
+// / decompress fail. Thread-local keeps it lock-free and avoids cross-call
+// contamination under the serialized decode path.
+thread_local std::string g_last_grok_error;
+
+void grok_error_capture(const char* msg, void*) {
+  if (msg) g_last_grok_error = msg;
+}
 
 GRK_CODEC_FORMAT sniff_codec(const uint8_t* data, std::size_t size) {
   static const uint8_t jp2_sig[] = {0x00, 0x00, 0x00, 0x0C, 'j', 'P', ' ', ' ',
@@ -61,7 +93,14 @@ class GrokDecoder : public Decoder {
 
   bool decode(const uint8_t* data, std::size_t size, int num_threads,
               DecodedImage& out, std::string& err) override {
-    ensure_initialized(num_threads);
+    // See top-of-file "Concurrent-decode safety" note for why decode() is
+    // serialized in its entirety.
+    std::lock_guard<std::mutex> decode_lk(decode_mu_);
+
+    if (!ensure_initialized(num_threads)) {
+      err = "grk_initialize failed";
+      return false;
+    }
 
     GRK_CODEC_FORMAT fmt = sniff_codec(data, size);
     if (fmt == GRK_CODEC_UNK) { err = "unknown codestream"; return false; }
@@ -72,16 +111,31 @@ class GrokDecoder : public Decoder {
     sp.buf = const_cast<uint8_t*>(data);
     sp.buf_len = size;
 
+    g_last_grok_error.clear();
+
     grk_object* codec = grk_decompress_init(&sp, &params);
-    if (!codec) { err = "decompress_init"; return false; }
+    if (!codec) {
+      err = "decompress_init";
+      if (!g_last_grok_error.empty()) {
+        err += ": ";
+        err += g_last_grok_error;
+      }
+      return false;
+    }
 
     grk_header_info hdr{};
     if (!grk_decompress_read_header(codec, &hdr)) {
-      grk_object_unref(codec); err = "read_header"; return false;
+      grk_object_unref(codec);
+      err = "read_header";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
     }
 
     if (!grk_decompress(codec, nullptr)) {
-      grk_object_unref(codec); err = "decompress"; return false;
+      grk_object_unref(codec);
+      err = "decompress";
+      if (!g_last_grok_error.empty()) { err += ": "; err += g_last_grok_error; }
+      return false;
     }
 
     grk_image* image = grk_decompress_get_image(codec);
@@ -95,12 +149,13 @@ class GrokDecoder : public Decoder {
     for (uint32_t c = 1; c < image->numcomps; ++c) {
       if (image->comps[c].w != w || image->comps[c].h != h) {
         grk_object_unref(codec);
-        err = "non-uniform component size";
+        err = "non-uniform component size (subsampled YUV not supported)";
         return false;
       }
     }
 
-    out.width = w; out.height = h;
+    out.width = w;
+    out.height = h;
     out.channels = image->numcomps;
     out.bit_depth = prec;
 
@@ -176,22 +231,29 @@ class GrokDecoder : public Decoder {
   }
 
  private:
-  void ensure_initialized(int num_threads) {
+  // Returns true on success.  grk_initialize() itself returns void in v20
+  // (verified at third_party/grok/src/lib/core/grok.h:1175), so there is
+  // no init-failure status to propagate from that call directly; we still
+  // return bool to leave a hook for a future API change and for symmetry
+  // with the decode() error path.
+  bool ensure_initialized(int num_threads) {
     std::lock_guard<std::mutex> lk(init_mu_);
-    if (initialized_) return;
+    if (initialized_) return true;
     uint32_t t = num_threads > 0 ? (uint32_t)num_threads : 0;  // 0 = all CPUs
     grk_msg_handlers handlers{};
-    handlers.info_callback  = &silent;
-    handlers.debug_callback = &silent;
-    handlers.trace_callback = &silent;
-    handlers.warn_callback  = &silent;
-    handlers.error_callback = &silent;
+    handlers.info_callback  = &grok_silent;
+    handlers.debug_callback = &grok_silent;
+    handlers.trace_callback = &grok_silent;
+    handlers.warn_callback  = &grok_silent;
+    handlers.error_callback = &grok_error_capture;
     grk_set_msg_handlers(handlers);
     grk_initialize(nullptr, t, nullptr);
     initialized_ = true;
+    return true;
   }
 
   std::mutex init_mu_;
+  std::mutex decode_mu_;
   bool initialized_ = false;
 };
 
