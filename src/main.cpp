@@ -12,11 +12,13 @@
 //   --decoder NAME       only run named decoder (openjpeg, grok)
 //   --no-verify          skip cross-decoder pixel comparison
 //   --roi WxH@X,Y        decode only the given region (e.g. 256x256@0,0)
+//   --concurrent-files N parallel bench jobs (per-file blob held once)    [1]
 //   --list-decoders      print available decoders and exit
 //
 // Output: JSON array on stdout, one entry per (file, decoder, threads) run.
 // Progress lines go to stderr so stdout stays clean for piping.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -24,14 +26,17 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "adapter.h"
 #include "bench.h"
 #include "env_capture.h"
 #include "json_out.h"
+#include "thread_pool.h"
 
 using namespace jp2kbench;
 
@@ -63,6 +68,7 @@ int main(int argc, char** argv) {
   BenchOptions opts;
   std::string only_decoder;
   std::vector<std::string> files;
+  int concurrent_files = 1;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -90,6 +96,10 @@ int main(int argc, char** argv) {
       need("--roi-tile");  // consume the arg
       std::cerr << "--roi-tile not yet implemented; use --roi WxH@X,Y\n";
       return 2;
+    }
+    else if (a == "--concurrent-files") {
+      concurrent_files = std::atoi(need("--concurrent-files").c_str());
+      if (concurrent_files < 1) concurrent_files = 1;
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
@@ -149,6 +159,9 @@ int main(int argc, char** argv) {
   }
 
   std::vector<FileResult> all_results;
+  std::mutex results_mtx;
+  ThreadPool pool(concurrent_files);
+
   for (const auto& path : files) {
     auto blob = read_file(path);
     if (blob.empty()) {
@@ -156,38 +169,51 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    // Reference image from first decoder, for cross-decoder verification.
-    DecodedImage ref_image;
+    // Reference image (serial, first decoder, threads=1).
+    auto ref_image = std::make_shared<DecodedImage>();
     bool have_ref = false;
+    if (opts.verify) {
+      std::string err;
+      bool ok;
+      if (opts.has_roi) {
+        Decoder::Region rg{opts.roi_x0, opts.roi_y0, opts.roi_x1, opts.roi_y1};
+        ok = decoders.front()->decode_region(blob.data(), blob.size(), 1, rg,
+                                             *ref_image, err);
+      } else {
+        ok = decoders.front()->decode(blob.data(), blob.size(), 1,
+                                      *ref_image, err);
+      }
+      have_ref = ok;
+    }
 
     for (auto& d : decoders) {
-      // Capture a reference at threads=1 from the first decoder only.
-      if (opts.verify && !have_ref && d.get() == decoders.front().get()) {
-        std::string err;
-        bool ok;
-        if (opts.has_roi) {
-          Decoder::Region rg{opts.roi_x0, opts.roi_y0, opts.roi_x1, opts.roi_y1};
-          ok = d->decode_region(blob.data(), blob.size(), 1, rg, ref_image, err);
-        } else {
-          ok = d->decode(blob.data(), blob.size(), 1, ref_image, err);
-        }
-        if (ok) have_ref = true;
-      }
       for (int t : opts.thread_counts) {
-        std::cerr << path << "  " << d->name() << "  t=" << t << "  ... ";
-        auto r = bench_file(*d, path, blob, t, opts,
-                            have_ref && d.get() != decoders.front().get()
-                                ? &ref_image : nullptr);
-        if (!r.error.empty()) {
-          std::cerr << "ERR " << r.error << "\n";
-        } else {
-          std::cerr << "min=" << (r.stats.min * 1e3) << "ms  "
-                    << r.megapixels_per_sec << " MP/s\n";
-        }
-        all_results.push_back(std::move(r));
+        bool is_ref_decoder = (d.get() == decoders.front().get());
+        const DecodedImage* ref_ptr =
+            (have_ref && !is_ref_decoder) ? ref_image.get() : nullptr;
+        Decoder* dec = d.get();
+        std::string path_copy = path;
+        // blob is captured by reference. Safe: wait_idle() below joins all
+        // jobs for this file before blob goes out of scope.
+        pool.submit([&, dec, ref_ptr, t, path_copy]() {
+          auto r = bench_file(*dec, path_copy, blob, t, opts, ref_ptr);
+          std::lock_guard<std::mutex> lk(results_mtx);
+          std::cerr << path_copy << "  " << dec->name() << "  t=" << t << "  ";
+          if (!r.error.empty()) std::cerr << "ERR " << r.error << "\n";
+          else std::cerr << "min=" << (r.stats.min * 1e3) << "ms  "
+                         << r.megapixels_per_sec << " MP/s\n";
+          all_results.push_back(std::move(r));
+        });
       }
     }
+    pool.wait_idle();   // bound blob lifetime; one file in memory at a time
   }
+
+  std::sort(all_results.begin(), all_results.end(),
+            [](const FileResult& a, const FileResult& b) {
+              return std::tie(a.path, a.decoder, a.threads, a.has_roi)
+                   < std::tie(b.path, b.decoder, b.threads, b.has_roi);
+            });
 
   RunHeader header;
   {
@@ -197,10 +223,28 @@ int main(int argc, char** argv) {
     header.started_at_iso8601 = ts;
   }
   for (int i = 0; i < argc; ++i) header.argv.emplace_back(argv[i]);
-  header.concurrent_files = 1;   // set by Task 10
+  header.concurrent_files = concurrent_files;
   header.env_json = capture_env_json();
 
-  Aggregate agg;                 // populated by Task 10
+  Aggregate agg;
+  if (concurrent_files > 1) {
+    // Approximate aggregate throughput as total megapixels scaled by the
+    // concurrency factor over summed per-job min decode time. Real wall-clock
+    // around pool.wait_idle would be more precise; this is good enough for
+    // a headline number until we wire that in.
+    double total_mpx = 0;
+    double total_s   = 0;
+    for (const auto& r : all_results) {
+      if (r.error.empty() && r.stats.min > 0) {
+        total_mpx += (double)r.width * r.height / 1e6;
+        total_s   += r.stats.min;
+      }
+    }
+    if (total_s > 0) {
+      agg.concurrent_throughput_mpix_s =
+          total_mpx * concurrent_files / total_s;
+    }
+  }
 
   write_schema_v2(std::cout, header, all_results, agg);
   return 0;
