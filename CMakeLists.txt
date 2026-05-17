@@ -66,14 +66,19 @@ else()
   message(STATUS "Grok adapter: disabled (set JP2KBENCH_GROK_SOURCE to enable)")
 endif()
 
+include(cmake/Versions.cmake)
+
 # --- Bench executable -------------------------------------------------------
 add_executable(jp2k-bench
   src/main.cpp
   src/bench.cpp
   src/json_out.cpp
+  src/env_capture.cpp
   src/adapter_openjpeg.cpp
 )
-target_include_directories(jp2k-bench PRIVATE src)
+target_include_directories(jp2k-bench PRIVATE
+  src
+  ${CMAKE_BINARY_DIR}/generated)
 jp2kbench_apply_flags(jp2k-bench)
 
 # openp2 is the library name openjpeg exposes (openjp2 in newer versions)

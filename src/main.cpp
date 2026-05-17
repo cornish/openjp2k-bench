@@ -29,6 +29,7 @@
 
 #include "adapter.h"
 #include "bench.h"
+#include "env_capture.h"
 #include "json_out.h"
 
 using namespace jp2kbench;
@@ -175,7 +176,7 @@ int main(int argc, char** argv) {
   }
   for (int i = 0; i < argc; ++i) header.argv.emplace_back(argv[i]);
   header.concurrent_files = 1;   // set by Task 10
-  header.env_json = "";          // set by Task 2
+  header.env_json = capture_env_json();
 
   Aggregate agg;                 // populated by Task 10
 
