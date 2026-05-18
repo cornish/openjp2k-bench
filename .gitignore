@@ -7,6 +7,7 @@ corpus/*
 !corpus/README.md
 !corpus/user
 !corpus/synthetic
+!corpus/synthetic-iter.txt
 corpus/user/*
 corpus/synthetic/*
 !corpus/user/.gitkeep

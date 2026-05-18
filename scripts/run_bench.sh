@@ -40,11 +40,16 @@ WARMUP="${WARMUP:-2}"
 THREADS="${THREADS:-1}"
 JSONL="${JSONL:-1}"
 HEAVY_ITERS="${HEAVY_ITERS:-5}"
-# Default targets the public corpus buckets outside the openjpeg-data tree.
+# Files matching this regex run with HEAVY_ITERS instead of ITERS. The
+# default covers (a) the openjpeg-data LoC/remote-sensing buckets when
+# someone has restored them (rare now that those live in corpus/scale/),
+# and (b) the synthetic 4096² rasters, which decode 5–10× slower than
+# 1024² and dominate wall time at default --iters 20.
 # Override to disable: HEAVY_PATTERN='' or HEAVY_ITERS=0.
-HEAVY_PATTERN="${HEAVY_PATTERN:-(loc-maps|remote-sensing)/}"
+HEAVY_PATTERN="${HEAVY_PATTERN:-(loc-maps|remote-sensing|/(rgb8|mono16)_4096)/}"
 EXTRA=()
 PATHS=()
+INCLUDE_FROM_FILES=()  # --include-from manifests (one path per line)
 
 INCLUDE_NONREGRESSION=0  # default: exclude */nonregression/* from perf runs
 
@@ -54,16 +59,35 @@ while [ $# -gt 0 ]; do
     --warmup)  WARMUP="$2"; shift 2 ;;
     --threads) THREADS="$2"; shift 2 ;;
     --include-nonregression) INCLUDE_NONREGRESSION=1; shift ;;
+    --include-from) INCLUDE_FROM_FILES+=("$2"); shift 2 ;;
     --)        shift; while [ $# -gt 0 ]; do PATHS+=("$1"); shift; done ;;
     -*)        EXTRA+=("$1"); shift ;;
     *)         PATHS+=("$1"); shift ;;
   esac
 done
 
-if [ ${#PATHS[@]} -eq 0 ]; then
-  echo "usage: run_bench.sh [--iters N] [--warmup N] [--threads N[,N...]] path..." >&2
+if [ ${#PATHS[@]} -eq 0 ] && [ ${#INCLUDE_FROM_FILES[@]} -eq 0 ]; then
+  echo "usage: run_bench.sh [--iters N] [--warmup N] [--threads N[,N...]] \\" >&2
+  echo "                    [--include-from MANIFEST] [--include-nonregression] path..." >&2
   exit 2
 fi
+
+# --include-from MANIFEST: each non-comment, non-empty line is a path
+# relative to the repo root (or absolute). Used by the synthetic
+# iteration-loop subset — scripts/select_synthetic_iter.py emits a
+# stable manifest of ~150 stratified files.
+for mf in "${INCLUDE_FROM_FILES[@]}"; do
+  if [ ! -r "$mf" ]; then
+    echo "--include-from: cannot read $mf" >&2
+    exit 2
+  fi
+  while IFS= read -r line; do
+    line="${line%%#*}"   # strip comment
+    line="${line## }"; line="${line%% }"  # trim
+    [ -z "$line" ] && continue
+    PATHS+=("$line")
+  done < "$mf"
+done
 
 FILES=()
 # Always skip dot-directories (e.g. .archived/ in the corpus). The
@@ -117,6 +141,10 @@ SPEC="${SPEC}, \"heavy_pattern\": \"${HEAVY_PATTERN}\""
 SPEC="${SPEC}, \"heavy_iters\": ${HEAVY_ITERS}"
 SPEC="${SPEC}, \"iters\": ${ITERS}"
 SPEC="${SPEC}, \"warmup\": ${WARMUP}"
+if [ ${#INCLUDE_FROM_FILES[@]} -gt 0 ]; then
+  imf_json=$(printf '"%s",' "${INCLUDE_FROM_FILES[@]}" | sed 's/,$//')
+  SPEC="${SPEC}, \"include_from\": [${imf_json}]"
+fi
 SPEC="${SPEC}}"
 FLAGS+=( --corpus-spec "$SPEC" )
 

@@ -24,7 +24,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/corpus/synthetic"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
-command -v opj_compress >/dev/null || { echo "need opj_compress on PATH" >&2; exit 1; }
+# Prefer the project's bundled opj_compress (built into build-tools/bin/
+# by scripts/build.sh) over whatever's on $PATH — the bundled one matches
+# the openjpeg version this repo pins, while a system opj_compress could
+# be on a stale Ubuntu package.
+OPJC="${OPJC:-}"
+if [ -z "$OPJC" ]; then
+  if   [ -x "$ROOT/build-tools/bin/opj_compress" ]; then OPJC="$ROOT/build-tools/bin/opj_compress"
+  elif command -v opj_compress >/dev/null;          then OPJC="opj_compress"
+  else echo "need opj_compress (build-tools/bin/ or on \$PATH)" >&2; exit 1
+  fi
+fi
+echo "[gen] using opj_compress: $OPJC"
 
 QUICK=0
 if [ "${1:-}" = "--quick" ]; then QUICK=1; fi
@@ -101,7 +112,7 @@ emit() {
   shift 5
   local outpath="$out_dir/$name.$container"
   [ -f "$outpath" ] && return 0
-  local cmd=(opj_compress -i "$src" -o "$outpath" "$@")
+  local cmd=("$OPJC" -i "$src" -o "$outpath" "$@")
   # -I selects the irreversible (lossy) 9-7 wavelet; omit for reversible 5-3.
   if [ "$rate" = "lossless" ]; then cmd+=(-r 1); else cmd+=(-r 20 -I); fi
   if ! "${cmd[@]}" >/dev/null 2>&1; then
