@@ -46,11 +46,14 @@ HEAVY_PATTERN="${HEAVY_PATTERN:-(loc-maps|remote-sensing)/}"
 EXTRA=()
 PATHS=()
 
+INCLUDE_NONREGRESSION=0  # default: exclude */nonregression/* from perf runs
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --iters)   ITERS="$2"; shift 2 ;;
     --warmup)  WARMUP="$2"; shift 2 ;;
     --threads) THREADS="$2"; shift 2 ;;
+    --include-nonregression) INCLUDE_NONREGRESSION=1; shift ;;
     --)        shift; while [ $# -gt 0 ]; do PATHS+=("$1"); shift; done ;;
     -*)        EXTRA+=("$1"); shift ;;
     *)         PATHS+=("$1"); shift ;;
@@ -63,12 +66,21 @@ if [ ${#PATHS[@]} -eq 0 ]; then
 fi
 
 FILES=()
+# Always skip dot-directories (e.g. .archived/ in the corpus). The
+# nonregression exclude is the upstream input/nonregression/ bucket only
+# — *not* baseline/nonregression/, which holds known-good encoder outputs
+# (Bretagne_*, etc) that decode fine. Use --include-nonregression to
+# bench against the upstream CVE/fuzzer corpus (intended only for the
+# --correctness track; run_correctness.sh is the right entry point).
+if [ "$INCLUDE_NONREGRESSION" = "0" ]; then
+  PRUNE_EXPR=( -type d \( -name '.*' -o -path '*/input/nonregression' \) -prune )
+else
+  PRUNE_EXPR=( -type d -name '.*' -prune )
+fi
 for p in "${PATHS[@]}"; do
   if [ -d "$p" ]; then
-    # Skip dot-directories (e.g. .archived/ in the corpus). They're for
-    # opt-in restore, not the default sweep — see corpus/README.md.
     while IFS= read -r -d '' f; do FILES+=("$f"); done < \
-      <(find -L "$p" \( -type d -name '.*' -prune \) -o \
+      <(find -L "$p" \( "${PRUNE_EXPR[@]}" \) -o \
             \( -type f \( -iname '*.jp2' -o -iname '*.j2k' -o -iname '*.jpc' \) -print0 \) | sort -z)
   elif [ -f "$p" ]; then
     FILES+=("$p")
@@ -95,7 +107,12 @@ roots_json=$(printf '"%s",' "${PATHS[@]}" | sed 's/,$//')
 SPEC="{\"roots\": [${roots_json}]"
 SPEC="${SPEC}, \"find_extensions\": [\".jp2\", \".j2k\", \".jpc\"]"
 SPEC="${SPEC}, \"find_follows_symlinks\": true"
-SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\"]"
+if [ "$INCLUDE_NONREGRESSION" = "0" ]; then
+  SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\", \"*/nonregression/*\"]"
+else
+  SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\"]"
+fi
+SPEC="${SPEC}, \"include_nonregression\": $([ \"$INCLUDE_NONREGRESSION\" = \"1\" ] && echo true || echo false)"
 SPEC="${SPEC}, \"heavy_pattern\": \"${HEAVY_PATTERN}\""
 SPEC="${SPEC}, \"heavy_iters\": ${HEAVY_ITERS}"
 SPEC="${SPEC}, \"iters\": ${ITERS}"

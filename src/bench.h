@@ -16,6 +16,17 @@ struct RunStats {
   int warmup = 0;
 };
 
+// Correctness-mode outcome class. Reflects what the bench observed for a
+// single decode attempt — not whether the result was *expected*. The
+// classifier file separately specifies expected_outcome; report.py
+// cross-references to flag mismatches.
+enum class CorrectnessOutcome {
+  Decoded,           // decoder returned success
+  CleanlyRejected,   // decoder returned an error string without crashing
+  // (Crashed / GarbageOutput require orchestrator-side detection — the
+  //  bench process exits before we'd emit such a row.)
+};
+
 struct FileResult {
   std::string path;
   std::size_t bytes = 0;
@@ -27,6 +38,11 @@ struct FileResult {
   // 4:4:4 or no decode was completed. Emitted as JSON null in the 4:4:4
   // case, as an array of {dx,dy} objects when subsampled.
   std::vector<ComponentDims> subsampled_components;
+  // Correctness-mode fields. Set only when BenchOptions.correctness is
+  // true; otherwise the JSON omits them.
+  bool is_correctness_row = false;
+  CorrectnessOutcome outcome = CorrectnessOutcome::Decoded;
+  std::string expected_outcome;  // "pass" | "fail" | "unknown" (from classifier)
   RunStats stats;
   // Pixels-per-second computed from min decode time.
   double megapixels_per_sec = 0;
@@ -74,6 +90,11 @@ struct BenchOptions {
   // If true, the timed loop calls Decoder::decode_with_stages() and the
   // result row reports the minimum across iterations for each stage.
   bool profile_stages = false;
+  // Correctness-mode: skip the timed loop; do exactly one decode attempt;
+  // emit a correctness row (type="correctness") with outcome class +
+  // expected_outcome rather than a timing row. Pairs with main.cpp's
+  // --correctness flag.
+  bool correctness = false;
 };
 
 RunStats summarize(std::vector<double>& times_seconds);

@@ -169,6 +169,33 @@ void write_jsonl_run(std::ostream& os, const RunHeader& h) {
 }
 
 void write_jsonl_result(std::ostream& os, const FileResult& r) {
+  if (r.is_correctness_row) {
+    os << "{\"type\": \"correctness\", ";
+    os << "\"file\": \"" << json_escape(r.path) << "\", ";
+    os << "\"bytes\": " << r.bytes << ", ";
+    os << "\"decoder\": \"" << json_escape(r.decoder) << "\", ";
+    os << "\"decoder_version\": \"" << json_escape(r.decoder_version) << "\", ";
+    os << "\"threads\": " << r.threads << ", ";
+    const char* oc = (r.outcome == CorrectnessOutcome::Decoded)
+                         ? "decoded_ok"
+                         : "cleanly_rejected";
+    os << "\"outcome\": \"" << oc << "\", ";
+    if (!r.expected_outcome.empty()) {
+      os << "\"expected_outcome\": \""
+         << json_escape(r.expected_outcome) << "\", ";
+    } else {
+      os << "\"expected_outcome\": null, ";
+    }
+    if (r.outcome == CorrectnessOutcome::Decoded) {
+      os << "\"width\": "      << r.width      << ", "
+         << "\"height\": "     << r.height     << ", "
+         << "\"channels\": "   << r.channels   << ", "
+         << "\"bit_depth\": "  << r.bit_depth  << ", ";
+    }
+    os << "\"error\": \"" << json_escape(r.error) << "\"";
+    os << "}\n";
+    return;
+  }
   os << "{\"type\": \"result\", ";
   emit_result_fields(os, r);
   os << "}\n";

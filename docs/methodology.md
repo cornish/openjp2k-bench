@@ -142,3 +142,31 @@ comparable:
 - Same thread count (`--threads N`).
 - Wall time of the decode call only (Kakadu's `kdu_expand` has flags to
   print just the decode time).
+
+## Chroma-subsampled inputs
+
+The pixel buffer is **planar** (each component's plane stored
+contiguously, planes concatenated in component order). Files with
+chroma subsampling (4:2:0, 4:2:2, 4:1:1) have smaller chroma planes —
+`DecodedImage::components[c].{w,h,dx,dy}` carries the per-component
+dimensions and subsampling factors. The result row's
+`subsampled_components` field is null for 4:4:4 inputs and an array of
+`{w,h,dx,dy}` objects otherwise.
+
+The cross-decoder pixel-equality check compares the planar buffers
+byte-for-byte; PSNR fallback computes over the same sample sequence.
+ROI/region decode on subsampled inputs is **not** supported in the
+default crop helper (chroma cropping requires `dx`/`dy` boundary
+alignment); adapters with native region APIs must override `decode_region`
+to handle it.
+
+## Correctness track
+
+A separate `--correctness` mode runs one decode attempt per file with no
+warmup/iters, recording `outcome ∈ {decoded_ok, cleanly_rejected}` and
+`expected_outcome ∈ {pass, fail, unknown}` from a classifier file. Used
+to measure decoder robustness against the upstream OpenJPEG CVE/fuzzer
+corpus (`input/nonregression/`), which the perf path excludes by
+default. Records carry `type="correctness"` in the JSONL stream so
+`report.py` can render them in a dedicated section. See
+`corpus/README.md` and `scripts/run_correctness.sh`.

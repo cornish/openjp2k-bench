@@ -64,6 +64,26 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.header_only = opts.header_only;
   r.profile_stages = opts.profile_stages;
 
+  // Correctness mode: a single decode attempt, no warmup, no timing.
+  // Emit just outcome + size + error string. Used by the nonregression
+  // robustness sweep — see scripts/run_correctness.sh.
+  if (opts.correctness) {
+    r.is_correctness_row = true;
+    bool ok = decoder.decode(blob.data(), blob.size(), threads, img, err);
+    if (ok) {
+      r.outcome = CorrectnessOutcome::Decoded;
+      r.width = img.width;
+      r.height = img.height;
+      r.channels = img.channels;
+      r.bit_depth = img.bit_depth;
+      r.subsampled_components = img.components;
+    } else {
+      r.outcome = CorrectnessOutcome::CleanlyRejected;
+      r.error = err;
+    }
+    return r;
+  }
+
   // --reuse-codec: hoist whatever per-iter setup the adapter can hoist out
   // of the timed region. ROI mode goes through decode_region which the
   // prepared-decode handle doesn't currently support; reuse_codec + ROI

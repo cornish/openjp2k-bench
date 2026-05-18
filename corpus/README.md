@@ -32,3 +32,19 @@ The active corpus tops out at ~15 MB. Larger JP2s (the Sentinel-2 10980² bands 
 2. **OOM safety.** A single decode of the 135 MB `*_TCI.jp2` peaks at ~13.7 GB RSS. With three decoders dlopen'd in one process (per commit `30229a9`) and the usual desktop overhead, this reliably tripped the global OOM killer on 16 GB hosts — taking the entire terminal scope (and the Claude session running in it) down with the bench process.
 
 The archived files remain on disk; they just don't run in the default sweep. Restore them by moving back out of `corpus/.archived/` and re-running `./scripts/build_manifest.sh`.
+
+## Perf vs correctness split
+
+The `input/nonregression/` subtree of the upstream OpenJPEG data is a CVE / fuzzer corpus: ~140 files of which ~80 are intentionally malformed (`*.SIGSEGV.*`, `*.SIGFPE.*`, `*.asan.*`, `broken*.jp2`, etc). Decoding them is not the point — gracefully rejecting them is. They previously drowned the perf bench's error counts in noise.
+
+The default `run_bench.sh` invocation now **excludes `*/input/nonregression/*`** from the perf sweep. (`baseline/nonregression/` — encoder reference outputs that decode fine — is kept.) Pass `--include-nonregression` to override.
+
+A separate **correctness track** measures the same files for behavior conformance instead of speed:
+
+```sh
+./scripts/run_correctness.sh \
+    corpus/public/conformance/openjpeg-data/input/nonregression/ \
+  > results/correctness_$(date +%Y%m%d_%H%M%S).jsonl
+```
+
+Each record is `type="correctness"` with `outcome ∈ {decoded_ok, cleanly_rejected}` and `expected_outcome ∈ {pass, fail, unknown}` derived from upstream's `BLACKLIST_JPEG2000` + `test_suite.ctest.in` (see `scripts/classify_nonregression.py`). `scripts/report.py` renders a dedicated correctness section: outcome × expected contingency per decoder, cross-decoder disagreements, files contradicting upstream's expected_outcome.

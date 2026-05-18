@@ -57,6 +57,7 @@ def _load(path: str) -> dict:
 def _load_jsonl(path: str) -> dict:
     run: dict | None = None
     results: list[dict] = []
+    correctness: list[dict] = []
     aggregate: dict = {}
     with open(path) as f:
         for lineno, line in enumerate(f, 1):
@@ -77,6 +78,9 @@ def _load_jsonl(path: str) -> dict:
             elif t == "result":
                 rec.pop("type", None)
                 results.append(rec)
+            elif t == "correctness":
+                rec.pop("type", None)
+                correctness.append(rec)
             elif t == "aggregate":
                 rec.pop("type", None)
                 aggregate = rec
@@ -89,6 +93,7 @@ def _load_jsonl(path: str) -> dict:
         "run": {k: v for k, v in run.items()
                 if k not in ("type", "schema_version")},
         "results": results,
+        "correctness": correctness,
         "aggregate": aggregate,
     }
 
@@ -387,6 +392,79 @@ def _print_gate(base_results: list[dict], cmp_results: list[dict],
     return 1 if failed else 0
 
 
+def _print_correctness(records: list[dict]) -> None:
+    """Render the correctness-track report.
+
+    For each decoder: 2x2 outcome × expected contingency table. Flags
+    cross-decoder disagreements (files where one decoder accepts and
+    another rejects), and lists files where the decoded/rejected
+    outcome contradicts the upstream expected_outcome.
+    """
+    if not records:
+        return
+    print()
+    print("=" * 72)
+    print("Correctness track")
+    print("=" * 72)
+
+    by_dec: dict[str, list[dict]] = defaultdict(list)
+    for r in records:
+        by_dec[r["decoder"]].append(r)
+    print(f"{'decoder':<10} {'decoded_ok/pass':>17} {'rejected/fail':>14} "
+          f"{'rejected/pass':>14} {'decoded_ok/fail':>17}")
+    print("-" * 72)
+    for dec, rows in sorted(by_dec.items()):
+        cells = defaultdict(int)
+        for r in rows:
+            cells[(r["outcome"], r["expected_outcome"])] += 1
+        ok_pass = cells[("decoded_ok", "pass")]
+        rej_fail = cells[("cleanly_rejected", "fail")]
+        rej_pass = cells[("cleanly_rejected", "pass")]      # decoder rejects something upstream says decodes
+        ok_fail = cells[("decoded_ok", "fail")]             # decoder accepts something upstream says fails
+        print(f"  {dec:<8} {ok_pass:>17} {rej_fail:>14} {rej_pass:>14} {ok_fail:>17}")
+
+    # Files where decoders disagree with each other (one accepts, another rejects).
+    by_file: dict[str, dict[str, dict]] = defaultdict(dict)
+    for r in records:
+        by_file[r["file"]][r["decoder"]] = r
+    diffs = []
+    for fp, dmap in by_file.items():
+        outcomes = {d: rec["outcome"] for d, rec in dmap.items()}
+        if len(set(outcomes.values())) > 1:
+            diffs.append((fp, outcomes))
+    if diffs:
+        print()
+        print(f"Cross-decoder disagreements ({len(diffs)} files):")
+        for fp, outcomes in sorted(diffs)[:15]:
+            short = fp.rsplit("/", 1)[-1]
+            tag = " ".join(f"{d}={o}" for d, o in sorted(outcomes.items()))
+            print(f"  {short:<60} {tag}")
+        if len(diffs) > 15:
+            print(f"  ... ({len(diffs) - 15} more)")
+
+    # Files where every decoder contradicts expected_outcome.
+    contradictions = []
+    for fp, dmap in by_file.items():
+        exp = next(iter(dmap.values()))["expected_outcome"]
+        if exp == "unknown":
+            continue
+        flipped = []
+        for d, rec in dmap.items():
+            if (rec["outcome"] == "decoded_ok" and exp == "fail") or \
+               (rec["outcome"] == "cleanly_rejected" and exp == "pass"):
+                flipped.append(d)
+        if flipped:
+            contradictions.append((fp, exp, flipped))
+    if contradictions:
+        print()
+        print(f"Files contradicting upstream expected_outcome ({len(contradictions)}):")
+        for fp, exp, flipped in sorted(contradictions)[:15]:
+            short = fp.rsplit("/", 1)[-1]
+            print(f"  exp={exp:<5}  flipped: {','.join(sorted(flipped)):<25} {short}")
+        if len(contradictions) > 15:
+            print(f"  ... ({len(contradictions) - 15} more)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("baseline", help="results JSON (schema v2)")
@@ -429,8 +507,14 @@ def main() -> int:
     if cmp:
         _print_env_diff(base["run"].get("env", {}), cmp["run"].get("env", {}))
 
-    _per_file_table(base["results"], cmp["results"] if cmp else None)
-    _aggregate_summary(base["results"], args.group_by)
+    if base["results"]:
+        _per_file_table(base["results"], cmp["results"] if cmp else None)
+        _aggregate_summary(base["results"], args.group_by)
+    # Correctness rows: render the dedicated section. The two-file mode
+    # (baseline + compare) is perf-only; correctness comparison across
+    # two runs isn't supported yet — pass them through separate report.py
+    # invocations.
+    _print_correctness(base.get("correctness", []))
 
     if args.tsv:
         _write_tsv(args.tsv, base["results"])
