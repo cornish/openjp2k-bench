@@ -59,8 +59,11 @@ fi
 FILES=()
 for p in "${PATHS[@]}"; do
   if [ -d "$p" ]; then
+    # Skip dot-directories (e.g. .archived/ in the corpus). They're for
+    # opt-in restore, not the default sweep — see corpus/README.md.
     while IFS= read -r -d '' f; do FILES+=("$f"); done < \
-      <(find -L "$p" -type f \( -iname '*.jp2' -o -iname '*.j2k' -o -iname '*.jpc' \) -print0 | sort -z)
+      <(find -L "$p" \( -type d -name '.*' -prune \) -o \
+            \( -type f \( -iname '*.jp2' -o -iname '*.j2k' -o -iname '*.jpc' \) -print0 \) | sort -z)
   elif [ -f "$p" ]; then
     FILES+=("$p")
   fi
