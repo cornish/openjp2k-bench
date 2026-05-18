@@ -63,6 +63,8 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.roi_x1 = opts.roi_x1; r.roi_y1 = opts.roi_y1;
   r.header_only = opts.header_only;
   r.profile_stages = opts.profile_stages;
+  r.scale_track = opts.scale_track;
+  r.memory_max_bytes = opts.memory_max_bytes;
 
   // Correctness mode: a single decode attempt, no warmup, no timing.
   // Emit just outcome + size + error string. Used by the nonregression
@@ -161,6 +163,16 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   int64_t  max_delta = 0;
   std::vector<double> times;
   times.reserve(opts.iters);
+
+  // Scale-track: spin up a /proc/self/status sampler around the timed
+  // region. Catches the mid-decode peak that getrusage understates when
+  // glibc trims the heap by the time the bench reads ru_maxrss.
+  std::unique_ptr<SampledRssPeak> sampler;
+  if (opts.scale_track) {
+    sampler = std::make_unique<SampledRssPeak>(opts.rss_sample_ms);
+    sampler->start();
+  }
+
   for (int i = 0; i < opts.iters; ++i) {
     img.pixels.clear();
     uint64_t rss_before = peak_rss_kb();
@@ -201,6 +213,19 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.stats.warmup = opts.warmup;
   r.rss_peak_kb  = peak_observed;
   r.rss_delta_kb = max_delta;
+  if (sampler) {
+    r.rss_peak_kb_sampled = sampler->stop();
+  }
+  // In modes without warmup (scale-track, --warmup 0) the r.width=… block
+  // above runs before any decode populates `img`. Backfill from the iter
+  // loop's last successful decode if dims are still unset.
+  if (r.width == 0 && img.width != 0) {
+    r.width = img.width;
+    r.height = img.height;
+    r.channels = img.channels;
+    r.bit_depth = img.bit_depth;
+    r.subsampled_components = img.components;
+  }
   if (r.stats.min > 0) {
     double mpx = (double)img.width * (double)img.height / 1.0e6;
     r.megapixels_per_sec = mpx / r.stats.min;

@@ -53,6 +53,17 @@ struct FileResult {
   double pixel_psnr_db = std::numeric_limits<double>::quiet_NaN();
   uint64_t rss_peak_kb = 0;     // highest peak RSS observed at end of any timed iter
   int64_t  rss_delta_kb = 0;    // max (peak_after - peak_before) across timed iters
+  // Scale-track: peak RSS sampled by a /proc/self/status poller during decode.
+  // Catches mid-decode peaks that getrusage() understates when glibc trims
+  // the heap before the process exits. Zero in non-scale-track runs.
+  uint64_t rss_peak_kb_sampled = 0;
+  // Scale-track provenance: the cgroup memory cap the run was invoked under
+  // (set by run_scale.sh via systemd-run --scope -p MemoryMax=). Zero when
+  // the bench was not run under such a wrapper.
+  uint64_t memory_max_bytes = 0;
+  // Scale-track sweep flag; orchestrator sets via --scale-track to mark
+  // result rows for downstream report_scale.py partitioning.
+  bool scale_track = false;
   // Region actually timed; has_roi=false => null in JSON.
   bool has_roi = false;
   uint32_t roi_x0 = 0, roi_y0 = 0, roi_x1 = 0, roi_y1 = 0;
@@ -95,6 +106,16 @@ struct BenchOptions {
   // expected_outcome rather than a timing row. Pairs with main.cpp's
   // --correctness flag.
   bool correctness = false;
+  // Scale-track mode: orchestrator-controlled per-(file, decoder)
+  // invocations under systemd-run --scope -p MemoryMax= caps. Enables
+  // /proc/self/status RSS sampling around the timed iter (mid-decode
+  // peak that getrusage misses on glibc-with-trim). Sets a flag on the
+  // result row so report_scale.py can partition. Sampler period in ms.
+  bool scale_track = false;
+  int rss_sample_ms = 100;
+  // The MemoryMax= cap the orchestrator invoked us under, in bytes.
+  // Echoed into the result row for downstream regression-gate context.
+  uint64_t memory_max_bytes = 0;
 };
 
 RunStats summarize(std::vector<double>& times_seconds);

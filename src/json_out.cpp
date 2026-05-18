@@ -81,6 +81,13 @@ void emit_result_fields(std::ostream& os, const FileResult& r) {
   }
   os << "\"rss_peak_kb\": "  << r.rss_peak_kb  << ", ";
   os << "\"rss_delta_kb\": " << r.rss_delta_kb << ", ";
+  if (r.scale_track) {
+    os << "\"scale_track\": true, ";
+    os << "\"rss_peak_kb_sampled\": " << r.rss_peak_kb_sampled << ", ";
+    os << "\"memory_max_bytes\": "    << r.memory_max_bytes    << ", ";
+  } else {
+    os << "\"scale_track\": false, ";
+  }
   os << "\"reused_codec\": " << (r.reused_codec ? "true" : "false") << ", ";
   os << "\"header_only\": "  << (r.header_only  ? "true" : "false") << ", ";
   if (r.profile_stages) {

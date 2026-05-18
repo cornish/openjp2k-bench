@@ -160,6 +160,28 @@ default crop helper (chroma cropping requires `dx`/`dy` boundary
 alignment); adapters with native region APIs must override `decode_region`
 to handle it.
 
+## Scale track
+
+For files ≥25 MB compressed, the main perf path is unsafe — a single TCI
+decode peaks at ~13.7 GB RSS, and with three decoders dlopen'd into one
+process the bench overruns host RAM on 16 GB boxes. The **scale track**
+runs each `(file, decoder)` pair in its own invocation under
+`systemd-run --scope -p MemoryMax=`, capped per file-size tier
+(25–50 MB → 8 GB, 50–100 MB → 12 GB, 100–200 MB → 16 GB, >200 MB → 24 GB).
+An overrun kills only the bench process; the orchestrator keeps going.
+
+A `/proc/self/status` poller runs alongside the decode and tracks peak
+VmRSS at `--rss-sample-ms` granularity (default 100 ms). This catches
+mid-decode peaks that `getrusage(RUSAGE_SELF).ru_maxrss` understates
+when glibc has trimmed the heap by the time the bench exits.
+`rss_peak_kb_sampled` is the headline allocation metric for the scale
+track; wall time is recorded but secondary (allocation regressions show
+up as RSS, not as wall time, on single-shot decodes).
+
+Scale runs at a lower cadence than perf (per `openjp2k` deliverable, not
+per commit). `scripts/report_scale.py` renders the cross-decoder RSS
+comparison and provides a regression gate in two-file mode.
+
 ## Correctness track
 
 A separate `--correctness` mode runs one decode attempt per file with no

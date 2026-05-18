@@ -136,4 +136,33 @@ for r in non_ref:
 " || { echo "FAIL yuv-${sub}"; exit 1; }
 done
 
+# 11. --scale-track produces scale-track rows with the right schema.
+#     No systemd-run wrapper here — we're just verifying the flag flow
+#     and that the sampler thread runs cleanly. The actual cgroup-capped
+#     orchestration is covered by an end-to-end run of scripts/run_scale.sh.
+echo "--- scale-track"
+scale_out="$TMP/scale.json"
+"$BIN" --scale-track --jsonl --memory-max-bytes 8589934592 \
+       "$FIX" > "$scale_out" 2>/dev/null
+python3 -c "
+import json
+recs = [json.loads(l) for l in open('$scale_out') if l.strip()]
+results = [r for r in recs if r.get('type') == 'result']
+assert results, 'no result rows in scale-track output'
+for r in results:
+    assert r['scale_track'] is True, r
+    assert r['memory_max_bytes'] == 8589934592, r['memory_max_bytes']
+    assert 'rss_peak_kb_sampled' in r, list(r.keys())
+    # Sampler should observe at least one VmRSS reading >= rss_peak_kb
+    # (modulo glibc trim quirks; >=80% is generous).
+    if r['rss_peak_kb']:
+        assert r['rss_peak_kb_sampled'] >= 0.8 * r['rss_peak_kb'], \
+            (r['decoder'], r['rss_peak_kb'], r['rss_peak_kb_sampled'])
+    # Stage timings populated (we force --profile-stages on)
+    assert r['stages_s'] is not None and r['stages_s']['decode'] > 0, r['stages_s']
+    # iters=1, warmup=0 implied
+    assert r['iters'] == 1, r['iters']
+    assert r['warmup'] == 0, r['warmup']
+" || { echo "FAIL scale-track"; exit 1; }
+
 echo "[smoke] all checks passed"
