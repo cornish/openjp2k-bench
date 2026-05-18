@@ -39,6 +39,22 @@ void emit_result_fields(std::ostream& os, const FileResult& r) {
   os << "\"height\": " << r.height << ", ";
   os << "\"channels\": " << r.channels << ", ";
   os << "\"bit_depth\": " << r.bit_depth << ", ";
+  // Subsampling factors per component. null when 4:4:4 or no decode; otherwise
+  // an array [{w,h,dx,dy}, ...].
+  bool any_sub = false;
+  for (const auto& c : r.subsampled_components) if (c.dx != 1 || c.dy != 1) { any_sub = true; break; }
+  if (any_sub) {
+    os << "\"subsampled_components\": [";
+    for (std::size_t i = 0; i < r.subsampled_components.size(); ++i) {
+      const auto& c = r.subsampled_components[i];
+      if (i) os << ", ";
+      os << "{\"w\": " << c.w << ", \"h\": " << c.h
+         << ", \"dx\": " << c.dx << ", \"dy\": " << c.dy << "}";
+    }
+    os << "], ";
+  } else {
+    os << "\"subsampled_components\": null, ";
+  }
   os << "\"iters\": " << r.stats.iters << ", ";
   os << "\"warmup\": " << r.stats.warmup << ", ";
   os << "\"timing_s\": {";

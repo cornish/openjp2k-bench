@@ -23,6 +23,10 @@ struct FileResult {
   std::string decoder_version;
   int threads = 0;
   uint32_t width = 0, height = 0, channels = 0, bit_depth = 0;
+  // Per-component {dx,dy} subsampling factors. Empty when the image is
+  // 4:4:4 or no decode was completed. Emitted as JSON null in the 4:4:4
+  // case, as an array of {dx,dy} objects when subsampled.
+  std::vector<ComponentDims> subsampled_components;
   RunStats stats;
   // Pixels-per-second computed from min decode time.
   double megapixels_per_sec = 0;

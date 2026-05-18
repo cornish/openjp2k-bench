@@ -121,6 +121,7 @@ FileResult bench_file(Decoder& decoder, const std::string& path,
   r.height = img.height;
   r.channels = img.channels;
   r.bit_depth = img.bit_depth;
+  r.subsampled_components = img.components;
 
   if (ref_image && !opts.header_only) {
     if (!img.same_shape(*ref_image)) {

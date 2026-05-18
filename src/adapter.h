@@ -9,20 +9,66 @@
 
 namespace jp2kbench {
 
+// Per-component layout. For 4:4:4 images (the common case) every component
+// has w == canvas_width, h == canvas_height, dx == dy == 1. For chroma-
+// subsampled images (4:2:0, 4:2:2, 4:1:1) the chroma components have
+// w == canvas_width / dx, h == canvas_height / dy.
+struct ComponentDims {
+  uint32_t w = 0;
+  uint32_t h = 0;
+  uint32_t dx = 1;  // horizontal subsampling factor
+  uint32_t dy = 1;  // vertical subsampling factor
+};
+
+// Decoded raster output. Pixel buffer is **planar**: the per-component
+// planes are concatenated in component order, each plane stored as
+// `components[c].w * components[c].h` samples of `bytes_per_sample()`
+// each. >8bpc samples are host-endian, right-aligned. 4:4:4 images
+// have `components.size() == channels` with all dims matching the
+// canvas; subsampled images have chroma planes at reduced dims.
 struct DecodedImage {
-  uint32_t width = 0;
-  uint32_t height = 0;
+  uint32_t width = 0;   // canvas width
+  uint32_t height = 0;  // canvas height
   uint32_t channels = 0;
   uint32_t bit_depth = 0;
-  // Interleaved, channel-major within a pixel. 8bpc => one byte per sample;
-  // >8bpc => two bytes per sample (host-endian, right-aligned).
+  std::vector<ComponentDims> components;
   std::vector<uint8_t> pixels;
+
+  std::size_t bytes_per_sample() const { return bit_depth <= 8 ? 1u : 2u; }
+
+  bool is_subsampled() const {
+    for (const auto& c : components) {
+      if (c.dx != 1 || c.dy != 1) return true;
+    }
+    return false;
+  }
+
+  std::size_t plane_offset(uint32_t c) const {
+    std::size_t off = 0;
+    std::size_t bps = bytes_per_sample();
+    for (uint32_t i = 0; i < c && i < components.size(); ++i) {
+      off += (std::size_t)components[i].w * components[i].h * bps;
+    }
+    return off;
+  }
+
+  std::size_t plane_size(uint32_t c) const {
+    return (std::size_t)components[c].w * components[c].h * bytes_per_sample();
+  }
 
   // Equality is exact for lossless and unhelpful for lossy. Callers that
   // need lossy comparison should compute PSNR against a ground-truth image.
   bool same_shape(const DecodedImage& o) const {
-    return width == o.width && height == o.height &&
-           channels == o.channels && bit_depth == o.bit_depth;
+    if (width != o.width || height != o.height ||
+        channels != o.channels || bit_depth != o.bit_depth) return false;
+    if (components.size() != o.components.size()) return false;
+    for (std::size_t i = 0; i < components.size(); ++i) {
+      if (components[i].w != o.components[i].w ||
+          components[i].h != o.components[i].h ||
+          components[i].dx != o.components[i].dx ||
+          components[i].dy != o.components[i].dy) return false;
+    }
+    return true;
   }
 };
 
@@ -106,21 +152,39 @@ inline bool Decoder::decode_region(const uint8_t* data, std::size_t size,
                                    int num_threads, const Region& region,
                                    DecodedImage& out, std::string& err) {
   if (!decode(data, size, num_threads, out, err)) return false;
+  // The default crop helper operates plane-by-plane and assumes every
+  // component shares the canvas dims (i.e. not subsampled). For
+  // subsampled images, region cropping must round to dx,dy boundaries
+  // and crop chroma planes at reduced extents — that's adapter-specific
+  // territory and any adapter that wants region decode on subsampled
+  // input should override decode_region with the native region API.
+  if (out.is_subsampled()) {
+    err = "decode_region: subsampled image not supported in default crop "
+          "helper (override decode_region in adapter)";
+    return false;
+  }
   uint32_t x0 = region.x0, y0 = region.y0;
   uint32_t x1 = region.x1 == 0 ? out.width  : std::min(region.x1, out.width);
   uint32_t y1 = region.y1 == 0 ? out.height : std::min(region.y1, out.height);
   if (x0 >= x1 || y0 >= y1) { err = "empty region"; return false; }
   uint32_t bw = x1 - x0, bh = y1 - y0;
-  uint32_t bpp = (out.bit_depth <= 8 ? 1u : 2u) * out.channels;
-  std::vector<uint8_t> cropped((std::size_t)bw * bh * bpp);
-  for (uint32_t y = 0; y < bh; ++y) {
-    const uint8_t* src = out.pixels.data() + ((y + y0) * out.width + x0) * bpp;
-    uint8_t* dst       = cropped.data()     +  y * bw                    * bpp;
-    std::memcpy(dst, src, (std::size_t)bw * bpp);
+  std::size_t bps = out.bytes_per_sample();
+  std::vector<uint8_t> cropped((std::size_t)bw * bh * out.channels * bps);
+  std::size_t dst_plane_off = 0;
+  for (uint32_t c = 0; c < out.channels; ++c) {
+    const uint8_t* src_plane = out.pixels.data() + out.plane_offset(c);
+    uint8_t* dst_plane = cropped.data() + dst_plane_off;
+    for (uint32_t y = 0; y < bh; ++y) {
+      std::memcpy(dst_plane + (std::size_t)y * bw * bps,
+                  src_plane + ((std::size_t)(y + y0) * out.width + x0) * bps,
+                  (std::size_t)bw * bps);
+    }
+    dst_plane_off += (std::size_t)bw * bh * bps;
   }
   out.pixels = std::move(cropped);
   out.width  = bw;
   out.height = bh;
+  for (auto& c : out.components) { c.w = bw; c.h = bh; }
   return true;
 }
 

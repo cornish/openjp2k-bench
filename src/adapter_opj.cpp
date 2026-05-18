@@ -100,48 +100,71 @@ bool unpack_opj_image(const opj_image_t* image, DecodedImage& out, std::string& 
   if (!image || image->numcomps == 0 || !image->comps) {
     err = "empty image"; return false;
   }
-  uint32_t w = image->comps[0].w;
-  uint32_t h = image->comps[0].h;
   uint32_t prec = image->comps[0].prec;
+  // Per-component bit depth assertion: the rest of the pipeline (verify,
+  // report) tracks one bit_depth for the image. Reject heterogeneous-depth
+  // images explicitly rather than silently truncating.
   for (uint32_t c = 1; c < image->numcomps; ++c) {
-    if (image->comps[c].w != w || image->comps[c].h != h) {
-      err = "non-uniform component size (subsampled YUV not supported)";
+    if (image->comps[c].prec != prec) {
+      err = "non-uniform component bit depth not supported";
       return false;
     }
   }
-  out.width = w;
-  out.height = h;
+
+  // Canvas dims = the JPEG 2000 image grid Xsiz/Ysiz. For each component,
+  // its plane is w = (Xsiz - X0siz + dx - 1) / dx samples wide, same for h
+  // — OpenJPEG has already computed this and exposed it as image->comps[c].w.
+  // For 4:4:4 every component matches the canvas.
+  uint32_t canvas_w = image->x1 - image->x0;
+  uint32_t canvas_h = image->y1 - image->y0;
+  out.width = canvas_w;
+  out.height = canvas_h;
   out.channels = image->numcomps;
   out.bit_depth = prec;
+  out.components.clear();
+  out.components.reserve(image->numcomps);
+  for (uint32_t c = 0; c < image->numcomps; ++c) {
+    ComponentDims cd;
+    cd.w = image->comps[c].w;
+    cd.h = image->comps[c].h;
+    cd.dx = image->comps[c].dx ? image->comps[c].dx : 1;
+    cd.dy = image->comps[c].dy ? image->comps[c].dy : 1;
+    out.components.push_back(cd);
+  }
 
-  if (prec <= 8) {
-    out.pixels.resize((std::size_t)w * h * image->numcomps);
-    for (uint32_t c = 0; c < image->numcomps; ++c) {
-      const OPJ_INT32* src = image->comps[c].data;
-      int sgnd = image->comps[c].sgnd;
-      int shift = sgnd ? (1 << (prec - 1)) : 0;
-      uint8_t* dst = out.pixels.data() + c;
-      for (uint32_t i = 0, n = w * h; i < n; ++i) {
+  // Planar pixel buffer: total = sum of (cw * ch * bps) across components.
+  std::size_t bps = out.bytes_per_sample();
+  std::size_t total = 0;
+  for (const auto& cd : out.components) total += (std::size_t)cd.w * cd.h * bps;
+  out.pixels.resize(total);
+
+  uint32_t max = (prec <= 8) ? 255u : ((1u << prec) - 1u);
+
+  std::size_t plane_off = 0;
+  for (uint32_t c = 0; c < image->numcomps; ++c) {
+    uint32_t cw = image->comps[c].w;
+    uint32_t ch = image->comps[c].h;
+    const OPJ_INT32* src = image->comps[c].data;
+    int sgnd = image->comps[c].sgnd;
+    int shift = sgnd ? (1 << (prec - 1)) : 0;
+    uint8_t* dst = out.pixels.data() + plane_off;
+    std::size_t n = (std::size_t)cw * ch;
+    if (prec <= 8) {
+      for (std::size_t i = 0; i < n; ++i) {
         int v = src[i] + shift;
-        if (v < 0) v = 0; else if (v > 255) v = 255;
-        dst[i * image->numcomps] = (uint8_t)v;
+        if (v < 0) v = 0; else if (v > (int)max) v = (int)max;
+        dst[i] = (uint8_t)v;
       }
-    }
-  } else {
-    out.pixels.resize((std::size_t)w * h * image->numcomps * 2);
-    uint32_t max = (1u << prec) - 1;
-    for (uint32_t c = 0; c < image->numcomps; ++c) {
-      const OPJ_INT32* src = image->comps[c].data;
-      int sgnd = image->comps[c].sgnd;
-      int shift = sgnd ? (1 << (prec - 1)) : 0;
-      uint8_t* dst = out.pixels.data() + c * 2;
-      for (uint32_t i = 0, n = w * h; i < n; ++i) {
+      plane_off += n;
+    } else {
+      for (std::size_t i = 0; i < n; ++i) {
         int v = src[i] + shift;
         if (v < 0) v = 0; else if ((uint32_t)v > max) v = (int)max;
         uint16_t u = (uint16_t)v;
-        dst[i * image->numcomps * 2 + 0] = (uint8_t)(u & 0xFF);
-        dst[i * image->numcomps * 2 + 1] = (uint8_t)(u >> 8);
+        dst[i * 2 + 0] = (uint8_t)(u & 0xFF);
+        dst[i * 2 + 1] = (uint8_t)(u >> 8);
       }
+      plane_off += n * 2;
     }
   }
   return true;

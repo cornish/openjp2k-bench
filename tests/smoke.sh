@@ -5,8 +5,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/build/_grok/bin/jp2k-bench"
-[ -x "$BIN" ] || BIN="$ROOT/build/jp2k-bench"
+# The canonical build location is build/jp2k-bench. An older build config
+# put the binary under build/_grok/bin/ — that path is checked as a
+# fallback for stale checkouts, but the top-level path wins when present.
+BIN="$ROOT/build/jp2k-bench"
+[ -x "$BIN" ] || BIN="$ROOT/build/_grok/bin/jp2k-bench"
 FIX="$ROOT/tests/fixtures/tiny.jp2"
 
 [ -x "$BIN" ] || { echo "missing jp2k-bench binary; run scripts/build.sh first" >&2; exit 1; }
@@ -106,5 +109,31 @@ for r in d['results']:
 # 9. report.py runs against the basic output.
 python3 "$ROOT/scripts/report.py" "$TMP/basic.json" >/dev/null \
   || { echo "FAIL report.py"; exit 1; }
+
+# 10. YUV-subsampled inputs: each adapter produces a non-null
+#     subsampled_components array, all decoders agree on per-component
+#     dims, and pixel_match==1 once a reference is established.
+for sub in 420 422; do
+  echo "--- yuv-${sub}"
+  yuv_out="$TMP/yuv_${sub}.json"
+  "$BIN" --iters 1 --warmup 1 "$ROOT/tests/fixtures/tiny_${sub}.jp2" \
+      > "$yuv_out" 2>/dev/null
+  python3 -c "
+import json
+d = json.load(open('$yuv_out'))
+results = d['results']
+assert results, 'no results for tiny_${sub}.jp2'
+ref_comps = results[0]['subsampled_components']
+assert ref_comps is not None, 'expected non-null subsampled_components for tiny_${sub}.jp2'
+for r in results:
+    assert r.get('error','')=='', (r['decoder'], r.get('error'))
+    assert r['subsampled_components'] == ref_comps, (r['decoder'], r['subsampled_components'], ref_comps)
+# One decoder is the reference (pixel_match==-1); the rest must match it.
+non_ref = [r for r in results if r['pixel_match'] != -1]
+assert non_ref, 'no non-reference decoders to compare against ref'
+for r in non_ref:
+    assert r['pixel_match'] == 1, (r['decoder'], r['pixel_match'])
+" || { echo "FAIL yuv-${sub}"; exit 1; }
+done
 
 echo "[smoke] all checks passed"

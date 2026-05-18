@@ -109,77 +109,105 @@ void unpack_grok_comp_to_u16(const SrcT* base, uint32_t stride, uint32_t w,
   }
 }
 
-// Copy a Grok grk_image into out.pixels, interleaved channel-major. Returns
-// false on geometry mismatch. Shared by decode() and the staged-timing path.
+// Copy a Grok grk_image into out.pixels, planar. Returns false on geometry
+// mismatch. Shared by decode() and the staged-timing path.
 //
 // Grok v20 hands the adapter a planar component buffer whose storage width
 // varies per component (GRK_INT_8 / _16 / _32). The format dispatch happens
-// ONCE per component below — the inner row/column loops are then typed
-// templates and the compiler can autovectorize. Outputs interleaved
-// channel-major, with bit-depth normalization to either u8 (prec <= 8) or
-// u16 little-endian (prec > 8); identical contract to the OpenJPEG adapter.
+// ONCE per component — the inner row/column loops are then typed templates
+// and the compiler can autovectorize. Outputs planar (each component's
+// plane contiguous; components concatenated in order), with bit-depth
+// normalization to either u8 (prec <= 8) or u16 little-endian (prec > 8);
+// identical contract to the OpenJPEG adapter. The interleave helpers
+// (unpack_grok_comp_to_u8/_u16) are reused by passing nc=1, c=0 and
+// pointing dst at the per-component plane base.
 bool unpack_grok_image(const grk_image* image, DecodedImage& out, std::string& err) {
   if (!image || image->numcomps == 0 || !image->comps) {
     err = "empty image"; return false;
   }
-  uint32_t w = image->comps[0].w;
-  uint32_t h = image->comps[0].h;
   uint32_t prec = image->comps[0].prec;
   const uint32_t nc = image->numcomps;
   for (uint32_t c = 1; c < nc; ++c) {
-    if (image->comps[c].w != w || image->comps[c].h != h) {
-      err = "non-uniform component size (subsampled YUV not supported)";
+    if (image->comps[c].prec != prec) {
+      err = "non-uniform component bit depth not supported";
       return false;
     }
   }
-  out.width = w; out.height = h; out.channels = nc; out.bit_depth = prec;
+  uint32_t canvas_w = image->x1 > image->x0
+      ? (image->x1 - image->x0)
+      : image->comps[0].w * (image->comps[0].dx ? image->comps[0].dx : 1);
+  uint32_t canvas_h = image->y1 > image->y0
+      ? (image->y1 - image->y0)
+      : image->comps[0].h * (image->comps[0].dy ? image->comps[0].dy : 1);
+  out.width = canvas_w; out.height = canvas_h;
+  out.channels = nc; out.bit_depth = prec;
+  out.components.clear();
+  out.components.reserve(nc);
+  for (uint32_t c = 0; c < nc; ++c) {
+    ComponentDims cd;
+    cd.w = image->comps[c].w;
+    cd.h = image->comps[c].h;
+    cd.dx = image->comps[c].dx ? image->comps[c].dx : 1;
+    cd.dy = image->comps[c].dy ? image->comps[c].dy : 1;
+    out.components.push_back(cd);
+  }
 
+  std::size_t bps = out.bytes_per_sample();
+  std::size_t total = 0;
+  for (const auto& cd : out.components) total += (std::size_t)cd.w * cd.h * bps;
+  out.pixels.resize(total);
+
+  std::size_t plane_off = 0;
   if (prec <= 8) {
-    out.pixels.resize((std::size_t)w * h * nc);
-    uint8_t* dst = out.pixels.data();
     for (uint32_t c = 0; c < nc; ++c) {
       const grk_image_comp& comp = image->comps[c];
-      const uint32_t stride = comp.stride ? comp.stride : w;
+      const uint32_t cw = comp.w;
+      const uint32_t ch = comp.h;
+      const uint32_t stride = comp.stride ? comp.stride : cw;
       const int shift = comp.sgnd ? (1 << (prec - 1)) : 0;
+      uint8_t* dst = out.pixels.data() + plane_off;
       switch (comp.data_type) {
         case GRK_INT_8:
           unpack_grok_comp_to_u8<int8_t>(
-              static_cast<const int8_t*>(comp.data), stride, w, h, nc, c, shift, dst);
+              static_cast<const int8_t*>(comp.data), stride, cw, ch, 1, 0, shift, dst);
           break;
         case GRK_INT_16:
           unpack_grok_comp_to_u8<int16_t>(
-              static_cast<const int16_t*>(comp.data), stride, w, h, nc, c, shift, dst);
+              static_cast<const int16_t*>(comp.data), stride, cw, ch, 1, 0, shift, dst);
           break;
         case GRK_INT_32:
         default:
           unpack_grok_comp_to_u8<int32_t>(
-              static_cast<const int32_t*>(comp.data), stride, w, h, nc, c, shift, dst);
+              static_cast<const int32_t*>(comp.data), stride, cw, ch, 1, 0, shift, dst);
           break;
       }
+      plane_off += (std::size_t)cw * ch;
     }
   } else {
-    out.pixels.resize((std::size_t)w * h * nc * 2);
-    uint8_t* dst = out.pixels.data();
     const uint32_t maxv = (1u << prec) - 1;
     for (uint32_t c = 0; c < nc; ++c) {
       const grk_image_comp& comp = image->comps[c];
-      const uint32_t stride = comp.stride ? comp.stride : w;
+      const uint32_t cw = comp.w;
+      const uint32_t ch = comp.h;
+      const uint32_t stride = comp.stride ? comp.stride : cw;
       const int shift = comp.sgnd ? (1 << (prec - 1)) : 0;
+      uint8_t* dst = out.pixels.data() + plane_off;
       switch (comp.data_type) {
         case GRK_INT_8:
           unpack_grok_comp_to_u16<int8_t>(
-              static_cast<const int8_t*>(comp.data), stride, w, h, nc, c, shift, maxv, dst);
+              static_cast<const int8_t*>(comp.data), stride, cw, ch, 1, 0, shift, maxv, dst);
           break;
         case GRK_INT_16:
           unpack_grok_comp_to_u16<int16_t>(
-              static_cast<const int16_t*>(comp.data), stride, w, h, nc, c, shift, maxv, dst);
+              static_cast<const int16_t*>(comp.data), stride, cw, ch, 1, 0, shift, maxv, dst);
           break;
         case GRK_INT_32:
         default:
           unpack_grok_comp_to_u16<int32_t>(
-              static_cast<const int32_t*>(comp.data), stride, w, h, nc, c, shift, maxv, dst);
+              static_cast<const int32_t*>(comp.data), stride, cw, ch, 1, 0, shift, maxv, dst);
           break;
       }
+      plane_off += (std::size_t)cw * ch * 2;
     }
   }
   return true;
