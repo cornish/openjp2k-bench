@@ -25,6 +25,13 @@ void write_schema_v2(std::ostream& os,
                      const std::vector<FileResult>& results,
                      const Aggregate& agg);
 
+// JSONL streaming variants. Each writes exactly one line terminated by '\n'
+// containing a self-describing record ({"type":"run"|"result"|"aggregate", ...}).
+// Caller is responsible for flushing if needed.
+void write_jsonl_run(std::ostream& os, const RunHeader& header);
+void write_jsonl_result(std::ostream& os, const FileResult& r);
+void write_jsonl_aggregate(std::ostream& os, const Aggregate& agg);
+
 std::string json_escape(const std::string& s);
 
 }  // namespace jp2kbench

@@ -24,10 +24,18 @@
 //                        unpack / teardown phases; emit per-stage min times
 //                        in result.stages_s so adapter-side format-conversion
 //                        cost can be isolated from codec decode cost.
+//   --jsonl              stream each result as one JSON line + flush instead
+//                        of buffering a single JSON document. Survives kills.
+//   --heavy-iters N      override --iters for files matching --heavy-pattern.
+//                        Use to cut runtime on a few extremely large files.
+//   --heavy-pattern RE   regex (std::regex_search) over the file path. When a
+//                        path matches and --heavy-iters > 0, that file's iters
+//                        are replaced. Default: empty (no override).
 //   --list-decoders      print available decoders and exit
 //
-// Output: JSON array on stdout, one entry per (file, decoder, threads) run.
-// Progress lines go to stderr so stdout stays clean for piping.
+// Output: by default, JSON document on stdout; with --jsonl, one self-describing
+// JSON object per line ({"type":"run"|"result"|"aggregate", ...}). Progress
+// lines always go to stderr so stdout stays clean for piping.
 
 #include <algorithm>
 #include <cstdio>
@@ -38,6 +46,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -82,6 +91,9 @@ int main(int argc, char** argv) {
   std::vector<std::string> files;
   int concurrent_files = 1;
   bool require_clean = false;
+  bool jsonl = false;
+  int heavy_iters = 0;
+  std::string heavy_pattern;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -126,6 +138,15 @@ int main(int argc, char** argv) {
     }
     else if (a == "--profile-stages") {
       opts.profile_stages = true;
+    }
+    else if (a == "--jsonl") {
+      jsonl = true;
+    }
+    else if (a == "--heavy-iters") {
+      heavy_iters = std::atoi(need("--heavy-iters").c_str());
+    }
+    else if (a == "--heavy-pattern") {
+      heavy_pattern = need("--heavy-pattern");
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
@@ -212,6 +233,36 @@ int main(int argc, char** argv) {
   std::mutex results_mtx;
   ThreadPool pool(concurrent_files);
 
+  // In --jsonl mode emit the run header up front so a kill mid-corpus still
+  // leaves a parseable prefix on disk.
+  RunHeader header;
+  {
+    char ts[32];
+    std::time_t t = std::time(nullptr);
+    std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t));
+    header.started_at_iso8601 = ts;
+  }
+  for (int i = 0; i < argc; ++i) header.argv.emplace_back(argv[i]);
+  header.concurrent_files = concurrent_files;
+  header.env_json = capture_env_json();
+
+  std::regex heavy_re;
+  bool heavy_re_ok = false;
+  if (!heavy_pattern.empty() && heavy_iters > 0) {
+    try {
+      heavy_re = std::regex(heavy_pattern);
+      heavy_re_ok = true;
+    } catch (const std::regex_error& e) {
+      std::cerr << "--heavy-pattern: bad regex: " << e.what() << "\n";
+      return 2;
+    }
+  }
+
+  if (jsonl) {
+    write_jsonl_run(std::cout, header);
+    std::cout.flush();
+  }
+
   for (const auto& path : files) {
     auto blob = read_file(path);
     if (blob.empty()) {
@@ -236,8 +287,17 @@ int main(int argc, char** argv) {
       have_ref = ok;
     }
 
+    // Per-file iter override: heavy files (e.g. multi-hundred-MP scans) can
+    // dominate the run; --heavy-iters caps them. The override applies only
+    // to opts.iters; warmup, threads, verify, etc. are untouched.
+    BenchOptions opts_for_file = opts;
+    if (heavy_re_ok && std::regex_search(path, heavy_re)) {
+      opts_for_file.iters = heavy_iters;
+      std::cerr << "[heavy] " << path << "  iters=" << heavy_iters << "\n";
+    }
+
     for (auto& d : decoders) {
-      for (int t : opts.thread_counts) {
+      for (int t : opts_for_file.thread_counts) {
         bool is_ref_decoder = (d.get() == decoders.front().get());
         const DecodedImage* ref_ptr =
             (have_ref && !is_ref_decoder) ? ref_image.get() : nullptr;
@@ -246,12 +306,16 @@ int main(int argc, char** argv) {
         // blob is captured by reference. Safe: wait_idle() below joins all
         // jobs for this file before blob goes out of scope.
         pool.submit([&, dec, ref_ptr, t, path_copy]() {
-          auto r = bench_file(*dec, path_copy, blob, t, opts, ref_ptr);
+          auto r = bench_file(*dec, path_copy, blob, t, opts_for_file, ref_ptr);
           std::lock_guard<std::mutex> lk(results_mtx);
           std::cerr << path_copy << "  " << dec->name() << "  t=" << t << "  ";
           if (!r.error.empty()) std::cerr << "ERR " << r.error << "\n";
           else std::cerr << "min=" << (r.stats.min * 1e3) << "ms  "
                          << r.megapixels_per_sec << " MP/s\n";
+          if (jsonl) {
+            write_jsonl_result(std::cout, r);
+            std::cout.flush();
+          }
           all_results.push_back(std::move(r));
         });
       }
@@ -259,22 +323,17 @@ int main(int argc, char** argv) {
     pool.wait_idle();   // bound blob lifetime; one file in memory at a time
   }
 
-  std::sort(all_results.begin(), all_results.end(),
-            [](const FileResult& a, const FileResult& b) {
-              return std::tie(a.path, a.decoder, a.threads, a.has_roi)
-                   < std::tie(b.path, b.decoder, b.threads, b.has_roi);
-            });
-
-  RunHeader header;
-  {
-    char ts[32];
-    std::time_t t = std::time(nullptr);
-    std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&t));
-    header.started_at_iso8601 = ts;
+  // In --jsonl mode the per-result lines are already on disk in stream
+  // order; re-sorting now would require buffering everything in memory and
+  // is also redundant — readers can sort post-hoc. The full-JSON path still
+  // wants a deterministic order for the array form.
+  if (!jsonl) {
+    std::sort(all_results.begin(), all_results.end(),
+              [](const FileResult& a, const FileResult& b) {
+                return std::tie(a.path, a.decoder, a.threads, a.has_roi)
+                     < std::tie(b.path, b.decoder, b.threads, b.has_roi);
+              });
   }
-  for (int i = 0; i < argc; ++i) header.argv.emplace_back(argv[i]);
-  header.concurrent_files = concurrent_files;
-  header.env_json = capture_env_json();
 
   Aggregate agg;
   if (concurrent_files > 1) {
@@ -296,6 +355,11 @@ int main(int argc, char** argv) {
     }
   }
 
-  write_schema_v2(std::cout, header, all_results, agg);
+  if (jsonl) {
+    write_jsonl_aggregate(std::cout, agg);
+    std::cout.flush();
+  } else {
+    write_schema_v2(std::cout, header, all_results, agg);
+  }
   return 0;
 }

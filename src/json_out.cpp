@@ -27,8 +27,9 @@ std::string json_escape(const std::string& s) {
 
 namespace {
 
-void emit_result(std::ostream& os, const FileResult& r) {
-  os << "    {";
+// Emits the body fields of a FileResult — no enclosing braces, no leading
+// indent. Shared between the pretty array form and the JSONL line form.
+void emit_result_fields(std::ostream& os, const FileResult& r) {
   os << "\"file\": \"" << json_escape(r.path) << "\", ";
   os << "\"bytes\": " << r.bytes << ", ";
   os << "\"decoder\": \"" << json_escape(r.decoder) << "\", ";
@@ -77,7 +78,21 @@ void emit_result(std::ostream& os, const FileResult& r) {
     os << "\"stages_s\": null, ";
   }
   os << "\"error\": \"" << json_escape(r.error) << "\"";
-  os << "}";
+}
+
+void emit_run_fields(std::ostream& os, const RunHeader& h) {
+  os << "\"schema_version\": 2, ";
+  os << "\"started_at\": \"" << json_escape(h.started_at_iso8601) << "\", ";
+  os << "\"argv\": [";
+  for (std::size_t i = 0; i < h.argv.size(); ++i) {
+    if (i) os << ", ";
+    os << "\"" << json_escape(h.argv[i]) << "\"";
+  }
+  os << "], ";
+  os << "\"concurrent_files\": " << h.concurrent_files;
+  if (!h.env_json.empty()) {
+    os << ", \"env\": " << h.env_json;
+  }
 }
 
 }  // namespace
@@ -105,7 +120,9 @@ void write_schema_v2(std::ostream& os,
   os << "  \"results\": [\n";
   for (std::size_t i = 0; i < results.size(); ++i) {
     if (i) os << ",\n";
-    emit_result(os, results[i]);
+    os << "    {";
+    emit_result_fields(os, results[i]);
+    os << "}";
   }
   os << "\n  ],\n";
 
@@ -114,6 +131,27 @@ void write_schema_v2(std::ostream& os,
     os << "\"concurrent_throughput_mpix_s\": " << agg.concurrent_throughput_mpix_s;
   }
   os << "}\n";
+  os << "}\n";
+}
+
+void write_jsonl_run(std::ostream& os, const RunHeader& h) {
+  os << "{\"type\": \"run\", ";
+  emit_run_fields(os, h);
+  os << "}\n";
+}
+
+void write_jsonl_result(std::ostream& os, const FileResult& r) {
+  os << "{\"type\": \"result\", ";
+  emit_result_fields(os, r);
+  os << "}\n";
+}
+
+void write_jsonl_aggregate(std::ostream& os, const Aggregate& agg) {
+  os << "{\"type\": \"aggregate\"";
+  if (std::isfinite(agg.concurrent_throughput_mpix_s)) {
+    os << ", \"concurrent_throughput_mpix_s\": "
+       << agg.concurrent_throughput_mpix_s;
+  }
   os << "}\n";
 }
 

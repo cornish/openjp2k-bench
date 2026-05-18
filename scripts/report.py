@@ -22,11 +22,75 @@ from typing import Callable
 
 
 def _load(path: str) -> dict:
+    """Load a schema-v2 results file.
+
+    Accepts two formats:
+      * single JSON document with {schema_version, run, results, aggregate}
+        — the canonical write_schema_v2 output.
+      * JSONL stream, where line 1 is {"type":"run", schema_version, ...},
+        subsequent lines are {"type":"result", ...}, and an optional final
+        {"type":"aggregate", ...}. The bench writes JSONL when --jsonl is
+        passed; readers get a parseable file even after a kill.
+    Returns the single-JSON shape regardless of source format.
+    """
     with open(path) as f:
-        data = json.load(f)
+        head = f.read(1)
+        if not head:
+            sys.exit(f"{path}: empty file")
+        f.seek(0)
+        if head == "{":
+            # Could be either; sniff by reading first record. Single-JSON
+            # documents start with `{\n  "schema_version"`; JSONL starts
+            # with `{"type": "run", "schema_version"`.
+            first = f.readline()
+            if '"type"' in first and '"run"' in first:
+                return _load_jsonl(path)
+            f.seek(0)
+            data = json.load(f)
+        else:
+            sys.exit(f"{path}: not JSON (first byte {head!r})")
     if not isinstance(data, dict) or data.get("schema_version") != 2:
         sys.exit(f"{path}: schema_version != 2 (got {data.get('schema_version')!r})")
     return data
+
+
+def _load_jsonl(path: str) -> dict:
+    run: dict | None = None
+    results: list[dict] = []
+    aggregate: dict = {}
+    with open(path) as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as e:
+                # A truncated final line (e.g. SIGKILL mid-write) is the one
+                # case we tolerate — anything earlier is real corruption.
+                sys.stderr.write(
+                    f"{path}:{lineno}: dropping unparseable line ({e})\n")
+                continue
+            t = rec.get("type")
+            if t == "run":
+                run = rec
+            elif t == "result":
+                rec.pop("type", None)
+                results.append(rec)
+            elif t == "aggregate":
+                rec.pop("type", None)
+                aggregate = rec
+    if run is None:
+        sys.exit(f"{path}: JSONL missing 'run' header record")
+    if run.get("schema_version") != 2:
+        sys.exit(f"{path}: schema_version != 2 (got {run.get('schema_version')!r})")
+    return {
+        "schema_version": 2,
+        "run": {k: v for k, v in run.items()
+                if k not in ("type", "schema_version")},
+        "results": results,
+        "aggregate": aggregate,
+    }
 
 
 def _bucket_of(rel_path: str) -> str:
