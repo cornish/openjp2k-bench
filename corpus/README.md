@@ -21,3 +21,12 @@ After populating any bucket, regenerate `corpus/manifest.json`:
 ```
 
 The manifest records width / height / components / bit depth / tile dims / decomp levels / lossy-vs-lossless / progression / sha256 per file, parsed directly from SIZ + COD markers — no external deps. See `scripts/manifest_tool.py`.
+
+## Why files >25 MB were retired
+
+The active corpus tops out at ~15 MB. Larger JP2s (the Sentinel-2 10980² bands and the bigger LoC scans) were moved to `corpus/.archived/` in the sibling repo for two reasons:
+
+1. **Workload fit.** This bench targets the openscope tile-decode pattern: ~1024×1024 regions, each stored as its own jp2. A single 10980² whole-image decode exercises a different memory access pattern (one giant contiguous allocation) that openscope never hits in practice.
+2. **OOM safety.** A single decode of the 135 MB `*_TCI.jp2` peaks at ~13.7 GB RSS. With three decoders dlopen'd in one process (per commit `30229a9`) and the usual desktop overhead, this reliably tripped the global OOM killer on 16 GB hosts — taking the entire terminal scope (and the Claude session running in it) down with the bench process.
+
+The archived files remain on disk; they just don't run in the default sweep. Restore them by moving back out of `corpus/.archived/` and re-running `./scripts/build_manifest.sh`.
