@@ -13,6 +13,14 @@ struct RunHeader {
   // Env block is a single pre-rendered JSON object string ("{...}"); the env
   // module owns formatting. Empty => omit field.
   std::string env_json;
+  // Auto-derived per-bucket summary of the input file list (file count,
+  // total bytes, max file size per bucket). Pre-rendered JSON object.
+  // Empty => omit.
+  std::string corpus_summary_json;
+  // Wrapper-provided description of how the file list was assembled
+  // (--corpus-spec JSON string: roots, exclude globs, size cap, etc.).
+  // Pre-rendered JSON. Empty => omit. See run_bench.sh.
+  std::string corpus_spec_json;
 };
 
 struct Aggregate {

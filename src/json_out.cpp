@@ -93,6 +93,12 @@ void emit_run_fields(std::ostream& os, const RunHeader& h) {
   if (!h.env_json.empty()) {
     os << ", \"env\": " << h.env_json;
   }
+  if (!h.corpus_summary_json.empty()) {
+    os << ", \"corpus_summary\": " << h.corpus_summary_json;
+  }
+  if (!h.corpus_spec_json.empty()) {
+    os << ", \"corpus_spec\": " << h.corpus_spec_json;
+  }
 }
 
 }  // namespace
@@ -114,6 +120,12 @@ void write_schema_v2(std::ostream& os,
   os << "    \"concurrent_files\": " << h.concurrent_files;
   if (!h.env_json.empty()) {
     os << ",\n    \"env\": " << h.env_json;
+  }
+  if (!h.corpus_summary_json.empty()) {
+    os << ",\n    \"corpus_summary\": " << h.corpus_summary_json;
+  }
+  if (!h.corpus_spec_json.empty()) {
+    os << ",\n    \"corpus_spec\": " << h.corpus_spec_json;
   }
   os << "\n  },\n";
 

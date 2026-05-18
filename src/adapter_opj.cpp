@@ -57,6 +57,28 @@ OPJ_BOOL mem_seek(OPJ_OFF_T n, void* user) {
 
 void silent(const char*, void*) {}
 
+// OpenJPEG's error callback dumps a free-form message to its handler. The
+// silent handler above throws those away, which collapsed many failures to
+// just "decode" with no detail. Mirror the grok adapter's pattern: capture
+// the last error in a thread_local and append it to the stage label on
+// failure. thread_local keeps openjpeg-vs-openjp2k decodes on different
+// threads from clobbering each other; on the bench's serialized decode
+// path that's belt-and-suspenders.
+thread_local std::string g_last_opj_error;
+
+void opj_error_capture(const char* msg, void*) {
+  if (!msg) return;
+  std::size_t n = std::strlen(msg);
+  while (n > 0 && (msg[n-1] == '\n' || msg[n-1] == '\r')) --n;
+  g_last_opj_error.assign(msg, n);
+}
+
+bool opj_fail(std::string& err, const char* stage) {
+  err = stage;
+  if (!g_last_opj_error.empty()) { err += ": "; err += g_last_opj_error; }
+  return false;
+}
+
 OPJ_CODEC_FORMAT sniff_codec(const uint8_t* data, std::size_t size) {
   static const uint8_t jp2_sig[] = {0x00, 0x00, 0x00, 0x0C, 'j', 'P', ' ', ' ',
                                     0x0D, 0x0A, 0x87, 0x0A};
@@ -137,6 +159,7 @@ class OpjDynDecoder : public Decoder {
 
   bool header_only(const uint8_t* data, std::size_t size, int num_threads,
                    std::string& err) override {
+    g_last_opj_error.clear();
     OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);
     if (fmt == OPJ_CODEC_UNKNOWN) { err = "unknown codestream"; return false; }
     MemStream mem{data, size, 0};
@@ -150,12 +173,12 @@ class OpjDynDecoder : public Decoder {
     if (!codec) { api_.stream_destroy(stream); err = "create_decompress"; return false; }
     api_.set_info_handler(codec, &silent, nullptr);
     api_.set_warning_handler(codec, &silent, nullptr);
-    api_.set_error_handler(codec, &silent, nullptr);
+    api_.set_error_handler(codec, &opj_error_capture, nullptr);
     opj_dparameters_t params;
     api_.set_default_decoder_parameters(&params);
     if (!api_.setup_decoder(codec, &params)) {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "setup_decoder"; return false;
+      return opj_fail(err, "setup_decoder");
     }
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
@@ -163,7 +186,7 @@ class OpjDynDecoder : public Decoder {
     if (image) api_.image_destroy(image);
     api_.destroy_codec(codec);
     api_.stream_destroy(stream);
-    if (!ok) { err = "read_header"; return false; }
+    if (!ok) return opj_fail(err, "read_header");
     return true;
   }
 
@@ -172,6 +195,7 @@ class OpjDynDecoder : public Decoder {
                           std::string& err) override {
     stages = {};
     double ts0 = now_seconds();
+    g_last_opj_error.clear();
     OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);
     if (fmt == OPJ_CODEC_UNKNOWN) { err = "unknown codestream"; return false; }
     MemStream mem{data, size, 0};
@@ -185,19 +209,19 @@ class OpjDynDecoder : public Decoder {
     if (!codec) { api_.stream_destroy(stream); err = "create_decompress"; return false; }
     api_.set_info_handler(codec, &silent, nullptr);
     api_.set_warning_handler(codec, &silent, nullptr);
-    api_.set_error_handler(codec, &silent, nullptr);
+    api_.set_error_handler(codec, &opj_error_capture, nullptr);
     opj_dparameters_t params;
     api_.set_default_decoder_parameters(&params);
     if (!api_.setup_decoder(codec, &params)) {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "setup_decoder"; return false;
+      return opj_fail(err, "setup_decoder");
     }
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     if (!api_.read_header(stream, codec, &image)) {
       if (image) api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "read_header"; return false;
+      return opj_fail(err, "read_header");
     }
     double ts1 = now_seconds();
     stages.setup_s = ts1 - ts0;
@@ -206,7 +230,7 @@ class OpjDynDecoder : public Decoder {
         !api_.end_decompress(codec, stream)) {
       api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "decode"; return false;
+      return opj_fail(err, "decode");
     }
     double ts2 = now_seconds();
     stages.decode_s = ts2 - ts1;
@@ -224,6 +248,7 @@ class OpjDynDecoder : public Decoder {
 
   bool decode(const uint8_t* data, std::size_t size, int num_threads,
               DecodedImage& out, std::string& err) override {
+    g_last_opj_error.clear();
     OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);
     if (fmt == OPJ_CODEC_UNKNOWN) { err = "unknown codestream"; return false; }
     MemStream mem{data, size, 0};
@@ -237,25 +262,25 @@ class OpjDynDecoder : public Decoder {
     if (!codec) { api_.stream_destroy(stream); err = "create_decompress"; return false; }
     api_.set_info_handler(codec, &silent, nullptr);
     api_.set_warning_handler(codec, &silent, nullptr);
-    api_.set_error_handler(codec, &silent, nullptr);
+    api_.set_error_handler(codec, &opj_error_capture, nullptr);
     opj_dparameters_t params;
     api_.set_default_decoder_parameters(&params);
     if (!api_.setup_decoder(codec, &params)) {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "setup_decoder"; return false;
+      return opj_fail(err, "setup_decoder");
     }
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     if (!api_.read_header(stream, codec, &image)) {
       if (image) api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "read_header"; return false;
+      return opj_fail(err, "read_header");
     }
     if (!api_.decode(codec, stream, image) ||
         !api_.end_decompress(codec, stream)) {
       api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "decode"; return false;
+      return opj_fail(err, "decode");
     }
     api_.destroy_codec(codec);
     api_.stream_destroy(stream);
@@ -267,6 +292,7 @@ class OpjDynDecoder : public Decoder {
   bool decode_region(const uint8_t* data, std::size_t size, int num_threads,
                      const Region& region, DecodedImage& out,
                      std::string& err) override {
+    g_last_opj_error.clear();
     OPJ_CODEC_FORMAT fmt = sniff_codec(data, size);
     if (fmt == OPJ_CODEC_UNKNOWN) { err = "unknown codestream"; return false; }
     MemStream mem{data, size, 0};
@@ -280,19 +306,19 @@ class OpjDynDecoder : public Decoder {
     if (!codec) { api_.stream_destroy(stream); err = "create_decompress"; return false; }
     api_.set_info_handler(codec, &silent, nullptr);
     api_.set_warning_handler(codec, &silent, nullptr);
-    api_.set_error_handler(codec, &silent, nullptr);
+    api_.set_error_handler(codec, &opj_error_capture, nullptr);
     opj_dparameters_t params;
     api_.set_default_decoder_parameters(&params);
     if (!api_.setup_decoder(codec, &params)) {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "setup_decoder"; return false;
+      return opj_fail(err, "setup_decoder");
     }
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     if (!api_.read_header(stream, codec, &image)) {
       if (image) api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "read_header"; return false;
+      return opj_fail(err, "read_header");
     }
     OPJ_INT32 x0 = (OPJ_INT32)region.x0, y0 = (OPJ_INT32)region.y0;
     OPJ_INT32 x1 = region.x1 ? (OPJ_INT32)region.x1 : (OPJ_INT32)image->x1;
@@ -300,13 +326,13 @@ class OpjDynDecoder : public Decoder {
     if (!api_.set_decode_area(codec, image, x0, y0, x1, y1)) {
       api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "set_decode_area"; return false;
+      return opj_fail(err, "set_decode_area");
     }
     if (!api_.decode(codec, stream, image) ||
         !api_.end_decompress(codec, stream)) {
       api_.image_destroy(image);
       api_.destroy_codec(codec); api_.stream_destroy(stream);
-      err = "decode"; return false;
+      return opj_fail(err, "decode");
     }
     api_.destroy_codec(codec);
     api_.stream_destroy(stream);

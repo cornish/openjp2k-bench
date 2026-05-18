@@ -44,6 +44,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <regex>
@@ -51,6 +52,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <sys/stat.h>
 
 #include "adapter.h"
 #include "bench.h"
@@ -94,6 +96,11 @@ int main(int argc, char** argv) {
   bool jsonl = false;
   int heavy_iters = 0;
   std::string heavy_pattern;
+  // Wrapper-provided JSON describing how the file list was assembled
+  // (corpus roots, exclude globs, size cap). Stored verbatim in the run
+  // header so a future bisect can distinguish "more files added" from
+  // "real perf change." See run_bench.sh for the producing side.
+  std::string corpus_spec_json;
 
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -147,6 +154,9 @@ int main(int argc, char** argv) {
     }
     else if (a == "--heavy-pattern") {
       heavy_pattern = need("--heavy-pattern");
+    }
+    else if (a == "--corpus-spec") {
+      corpus_spec_json = need("--corpus-spec");
     }
     else if (a == "--list-decoders") {
       std::cout << "openjpeg\n";
@@ -245,6 +255,52 @@ int main(int argc, char** argv) {
   for (int i = 0; i < argc; ++i) header.argv.emplace_back(argv[i]);
   header.concurrent_files = concurrent_files;
   header.env_json = capture_env_json();
+  header.corpus_spec_json = corpus_spec_json;
+
+  // Auto-derive per-bucket counts + total bytes + max file size from the
+  // resolved input list. Bucket = first directory segment after a known
+  // "corpus/" or "corpus/public/" prefix, else the first segment. So a
+  // future reader can distinguish "more files added" from "real perf change"
+  // even without the wrapper-provided spec.
+  {
+    struct B { std::uint64_t files = 0, bytes = 0, max_bytes = 0; };
+    std::map<std::string, B> buckets;
+    std::uint64_t total_bytes = 0, max_bytes = 0;
+    auto bucket_for = [](const std::string& p) -> std::string {
+      static const char* prefixes[] = {"corpus/public/", "corpus/synthetic/",
+                                       "corpus/user/", "corpus/"};
+      std::string s = p;
+      for (const char* px : prefixes) {
+        auto pos = s.find(px);
+        if (pos != std::string::npos) { s = s.substr(pos + std::strlen(px)); break; }
+      }
+      auto slash = s.find('/');
+      return (slash == std::string::npos) ? std::string("_root") : s.substr(0, slash);
+    };
+    for (const auto& f : files) {
+      std::uint64_t sz = 0;
+      struct stat st; if (::stat(f.c_str(), &st) == 0) sz = (std::uint64_t)st.st_size;
+      auto& b = buckets[bucket_for(f)];
+      b.files++; b.bytes += sz; if (sz > b.max_bytes) b.max_bytes = sz;
+      total_bytes += sz; if (sz > max_bytes) max_bytes = sz;
+    }
+    std::ostringstream os;
+    os << "{\"total_files\": " << files.size()
+       << ", \"total_bytes\": " << total_bytes
+       << ", \"max_file_bytes\": " << max_bytes
+       << ", \"buckets\": {";
+    bool first = true;
+    for (const auto& kv : buckets) {
+      if (!first) os << ", "; first = false;
+      os << "\"" << kv.first << "\": {"
+         << "\"files\": " << kv.second.files
+         << ", \"bytes\": " << kv.second.bytes
+         << ", \"max_bytes\": " << kv.second.max_bytes
+         << "}";
+    }
+    os << "}}";
+    header.corpus_summary_json = os.str();
+  }
 
   std::regex heavy_re;
   bool heavy_re_ok = false;

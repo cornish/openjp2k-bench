@@ -13,6 +13,12 @@
 # Example:
 #   ./scripts/run_bench.sh --threads 1,8 corpus/ > results.jsonl
 #
+# Recommended root is `corpus/` (not `corpus/public/`) so the synthetic
+# parameter sweep — built by scripts/gen_corpus.sh, one axis varied at a
+# time — runs alongside the public buckets. The public conformance suite
+# does not vary parameter axes cleanly; the synthetic sweep is what gives
+# controlled-variable signal when a regression lands.
+#
 # Crash-proof example (recommended for the full corpus):
 #   nohup ./scripts/run_bench.sh corpus/ \
 #         > results/full_corpus_$(date +%Y%m%d_%H%M%S).jsonl \
@@ -81,6 +87,21 @@ fi
 if [ -n "$HEAVY_PATTERN" ] && [ "$HEAVY_ITERS" -gt 0 ]; then
   FLAGS+=( --heavy-pattern "$HEAVY_PATTERN" --heavy-iters "$HEAVY_ITERS" )
 fi
+
+# Provenance: tell the bench HOW we assembled the file list so a future
+# bisect can distinguish "more files added" from "real perf change."
+# Hand-rolled JSON (no jq dependency); keys mirror what's tunable above.
+roots_json=$(printf '"%s",' "${PATHS[@]}" | sed 's/,$//')
+SPEC="{\"roots\": [${roots_json}]"
+SPEC="${SPEC}, \"find_extensions\": [\".jp2\", \".j2k\", \".jpc\"]"
+SPEC="${SPEC}, \"find_follows_symlinks\": true"
+SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\"]"
+SPEC="${SPEC}, \"heavy_pattern\": \"${HEAVY_PATTERN}\""
+SPEC="${SPEC}, \"heavy_iters\": ${HEAVY_ITERS}"
+SPEC="${SPEC}, \"iters\": ${ITERS}"
+SPEC="${SPEC}, \"warmup\": ${WARMUP}"
+SPEC="${SPEC}}"
+FLAGS+=( --corpus-spec "$SPEC" )
 
 echo "[run] $BIN ${FLAGS[*]} ${EXTRA[*]:-} (${#FILES[@]} files)" >&2
 "$BIN" "${FLAGS[@]}" "${EXTRA[@]}" "${FILES[@]}"

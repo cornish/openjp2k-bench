@@ -3,8 +3,10 @@
 Inputs the bench runs against. Layout:
 
 - `user/` — Files you drop in by hand. Not tracked, not generated.
-- `synthetic/` — Output of `scripts/gen_corpus.sh` (parametric `opj_compress` grid). Not tracked, regenerate locally.
+- `synthetic/` — Output of `scripts/gen_corpus.sh` (parametric `opj_compress` grid). Not tracked, regenerate locally. **Keep this in every bench run** — the public conformance suite does not vary parameter axes (pLRCP × pRPCL × d1/d5 × tiled/untiled × lossless/lossy) cleanly, but the synthetic sweep does, and that controlled-variable signal is how regressions get localized.
 - `public/` — Files fetched from public sources (conformance / archival / remote-sensing / medical / cinema). **This repo expects `corpus/public/` to be a symlink to `~/GitHub/openjp2k-data/corpus/`**, the sibling repo that owns the curated fetcher and `MANUAL_SOURCES.md` for auth-gated sources.
+
+**Recommended bench root is `corpus/`** (not `corpus/public/`) so synthetic + public buckets both run. `corpus/public/` only is fine for quick sanity but loses the controlled-variable signal.
 
 To set it up:
 
