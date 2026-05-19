@@ -10,7 +10,17 @@ Inputs the bench runs against. Layout:
   - `run_bench.sh`'s default `HEAVY_PATTERN` runs the 4096² rasters at `HEAVY_ITERS=5` (vs 20) so a full-sweep run survives in reasonable wall time without dropping coverage.
 - `public/` — Files fetched from public sources (conformance / archival / remote-sensing / medical / cinema). **This repo expects `corpus/public/` to be a symlink to `~/GitHub/openjp2k-data/corpus/`**, the sibling repo that owns the curated fetcher and `MANUAL_SOURCES.md` for auth-gated sources.
 
-**Recommended bench root is `corpus/`** (not `corpus/public/`) so synthetic + public buckets both run. `corpus/public/` only is fine for quick sanity but loses the controlled-variable signal.
+**Three perf tiers, picked by invocation:**
+
+| Tier                    | Files | Wall    | Invocation                                                                      | When                            |
+| ----------------------- | ----- | ------- | ------------------------------------------------------------------------------- | ------------------------------- |
+| Smoke / inner-loop      | ~90   | ~9 m    | `./scripts/run_smoke.sh`                                                        | "did this commit move it?" — tripwire, not measurement (p90 intra-run stddev ≈ 3% > headline geomean delta) |
+| Iteration / pre-commit  | ~400  | ~50 m   | `./scripts/run_bench.sh --include-from corpus/synthetic-iter.txt corpus/public/` | end-of-session / pre-PR         |
+| Deliverable / full      | ~3500 | hours   | `./scripts/run_bench.sh corpus/`                                                | per openjp2k release            |
+
+The smoke tier slim-fits the synthetic-iter manifest only — fast feedback during development at the cost of public-corpus coverage. The iteration tier adds the public corpus on top of the smoke set; the deliverable tier expands synthetic to the full ~3360-file sweep (its 4096² rasters run at `HEAVY_ITERS=5` so wall stays bounded).
+
+The correctness and scale tracks are separate; see `scripts/run_correctness.sh` and `scripts/run_scale.sh`.
 
 To set it up:
 
