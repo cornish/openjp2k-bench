@@ -96,10 +96,15 @@ FILES=()
 # (Bretagne_*, etc) that decode fine. Use --include-nonregression to
 # bench against the upstream CVE/fuzzer corpus (intended only for the
 # --correctness track; run_correctness.sh is the right entry point).
+# Always prune corpus/public/scale/ from perf walks — those files are
+# huge (>25 MB) and only safe to bench under the scale-track wrapper
+# (scripts/run_scale.sh) which puts each invocation under a per-decoder
+# memory cap. Running them through the main bench path with three
+# decoders dlopen'd in one process risks OOM-cascading the host.
 if [ "$INCLUDE_NONREGRESSION" = "0" ]; then
-  PRUNE_EXPR=( -type d \( -name '.*' -o -path '*/input/nonregression' \) -prune )
+  PRUNE_EXPR=( -type d \( -name '.*' -o -path '*/input/nonregression' -o -path '*/scale' \) -prune )
 else
-  PRUNE_EXPR=( -type d -name '.*' -prune )
+  PRUNE_EXPR=( -type d \( -name '.*' -o -path '*/scale' \) -prune )
 fi
 for p in "${PATHS[@]}"; do
   if [ -d "$p" ]; then
@@ -132,9 +137,9 @@ SPEC="{\"roots\": [${roots_json}]"
 SPEC="${SPEC}, \"find_extensions\": [\".jp2\", \".j2k\", \".jpc\"]"
 SPEC="${SPEC}, \"find_follows_symlinks\": true"
 if [ "$INCLUDE_NONREGRESSION" = "0" ]; then
-  SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\", \"*/nonregression/*\"]"
+  SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\", \"*/nonregression/*\", \"*/scale/*\"]"
 else
-  SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\"]"
+  SPEC="${SPEC}, \"exclude_globs\": [\"*/.*/*\", \"*/scale/*\"]"
 fi
 SPEC="${SPEC}, \"include_nonregression\": $([ \"$INCLUDE_NONREGRESSION\" = \"1\" ] && echo true || echo false)"
 SPEC="${SPEC}, \"heavy_pattern\": \"${HEAVY_PATTERN}\""
