@@ -203,6 +203,11 @@ class OpjDynDecoder : public Decoder {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
       return opj_fail(err, "setup_decoder");
     }
+    // Non-strict so the decoder tolerates Psot-underrun encoder bugs
+    // (e.g. the DICOM J2KR compsamples; cornish/openjp2k#1). Vanilla
+    // openjpeg 2.5.3's strict path still errors on these — this only
+    // helps the fork's column once the fix is in.
+    api_.decoder_set_strict_mode(codec, OPJ_FALSE);
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     bool ok = api_.read_header(stream, codec, &image);
@@ -239,6 +244,11 @@ class OpjDynDecoder : public Decoder {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
       return opj_fail(err, "setup_decoder");
     }
+    // Non-strict so the decoder tolerates Psot-underrun encoder bugs
+    // (e.g. the DICOM J2KR compsamples; cornish/openjp2k#1). Vanilla
+    // openjpeg 2.5.3's strict path still errors on these — this only
+    // helps the fork's column once the fix is in.
+    api_.decoder_set_strict_mode(codec, OPJ_FALSE);
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     if (!api_.read_header(stream, codec, &image)) {
@@ -292,6 +302,11 @@ class OpjDynDecoder : public Decoder {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
       return opj_fail(err, "setup_decoder");
     }
+    // Non-strict so the decoder tolerates Psot-underrun encoder bugs
+    // (e.g. the DICOM J2KR compsamples; cornish/openjp2k#1). Vanilla
+    // openjpeg 2.5.3's strict path still errors on these — this only
+    // helps the fork's column once the fix is in.
+    api_.decoder_set_strict_mode(codec, OPJ_FALSE);
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     if (!api_.read_header(stream, codec, &image)) {
@@ -336,6 +351,11 @@ class OpjDynDecoder : public Decoder {
       api_.destroy_codec(codec); api_.stream_destroy(stream);
       return opj_fail(err, "setup_decoder");
     }
+    // Non-strict so the decoder tolerates Psot-underrun encoder bugs
+    // (e.g. the DICOM J2KR compsamples; cornish/openjp2k#1). Vanilla
+    // openjpeg 2.5.3's strict path still errors on these — this only
+    // helps the fork's column once the fix is in.
+    api_.decoder_set_strict_mode(codec, OPJ_FALSE);
     if (num_threads > 1) api_.codec_set_threads(codec, num_threads);
     opj_image_t* image = nullptr;
     if (!api_.read_header(stream, codec, &image)) {

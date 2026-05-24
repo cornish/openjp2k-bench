@@ -38,6 +38,7 @@ struct OpjApi {
   OPJ_BOOL       (*set_error_handler)(opj_codec_t*, opj_msg_callback, void*);
   void           (*set_default_decoder_parameters)(opj_dparameters_t*);
   OPJ_BOOL       (*setup_decoder)(opj_codec_t*, opj_dparameters_t*);
+  OPJ_BOOL       (*decoder_set_strict_mode)(opj_codec_t*, OPJ_BOOL);
   OPJ_BOOL       (*codec_set_threads)(opj_codec_t*, int);
   OPJ_BOOL       (*read_header)(opj_stream_t*, opj_codec_t*, opj_image_t**);
   OPJ_BOOL       (*set_decode_area)(opj_codec_t*, opj_image_t*,

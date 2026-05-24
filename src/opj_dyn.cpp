@@ -47,6 +47,7 @@ bool load_opj_api(const char* so_path, OpjApi& out, std::string& err) {
   R(set_error_handler,                "opj_set_error_handler");
   R(set_default_decoder_parameters,   "opj_set_default_decoder_parameters");
   R(setup_decoder,                    "opj_setup_decoder");
+  R(decoder_set_strict_mode,          "opj_decoder_set_strict_mode");
   R(codec_set_threads,                "opj_codec_set_threads");
   R(read_header,                      "opj_read_header");
   R(set_decode_area,                  "opj_set_decode_area");
