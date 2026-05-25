@@ -60,6 +60,8 @@ while [ $# -gt 0 ]; do
     --threads) THREADS="$2"; shift 2 ;;
     --include-nonregression) INCLUDE_NONREGRESSION=1; shift ;;
     --include-from) INCLUDE_FROM_FILES+=("$2"); shift 2 ;;
+    --roi|--roi-tile|--decoder|--heavy-iters|--heavy-pattern|--concurrent-files|--rss-sample-ms|--memory-max-bytes)
+               EXTRA+=("$1" "$2"); shift 2 ;;
     --)        shift; while [ $# -gt 0 ]; do PATHS+=("$1"); shift; done ;;
     -*)        EXTRA+=("$1"); shift ;;
     *)         PATHS+=("$1"); shift ;;
