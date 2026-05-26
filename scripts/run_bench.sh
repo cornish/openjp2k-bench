@@ -123,7 +123,7 @@ if [ ${#FILES[@]} -eq 0 ]; then
   exit 2
 fi
 
-FLAGS=( --iters "$ITERS" --warmup "$WARMUP" --threads "$THREADS" )
+FLAGS=( --iters "$ITERS" --warmup "$WARMUP" )
 if [ "$JSONL" = "1" ]; then
   FLAGS+=( --jsonl )
 fi
@@ -155,5 +155,18 @@ fi
 SPEC="${SPEC}}"
 FLAGS+=( --corpus-spec "$SPEC" )
 
-echo "[run] $BIN ${FLAGS[*]} ${EXTRA[*]:-} (${#FILES[@]} files)" >&2
-"$BIN" "${FLAGS[@]}" "${EXTRA[@]}" "${FILES[@]}"
+# --threads N1,N2,... runs the bench once per thread count in a fresh
+# jp2k-bench process.  Grok's adapter (adapter_grok.cpp) initializes
+# its singleton thread pool ONCE at first --threads value and ignores
+# subsequent set_threads() calls, so an internal sweep within a single
+# process produces wrong grok numbers for all-but-first thread counts.
+# Each thread count gets its own process; result rows already carry
+# `threads` so downstream analysis is unchanged.  Single-value
+# --threads N is identical to the old behavior modulo this loop.
+IFS=',' read -ra THREAD_LIST <<< "$THREADS"
+for T in "${THREAD_LIST[@]}"; do
+  T_trim="${T## }"; T_trim="${T_trim%% }"
+  [ -z "$T_trim" ] && continue
+  echo "[run] $BIN ${FLAGS[*]} --threads $T_trim ${EXTRA[*]:-} (${#FILES[@]} files)" >&2
+  "$BIN" "${FLAGS[@]}" --threads "$T_trim" "${EXTRA[@]}" "${FILES[@]}"
+done
